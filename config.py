@@ -1,20 +1,27 @@
 """
-config.py — Configuration for Sawtooth-Memory (MVP).
+config.py — Configuration models for Sawtooth-Memory.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class OllamaConfig(BaseModel):
+    """Connection settings for the local Ollama compression backend."""
+
+    base_url: str = "http://localhost:11434"
+    model: str = "phi4"
+    timeout_seconds: int = 90
 
 
 class ContextManagerConfig(BaseModel):
     """Top-level configuration for the ContextManager middleware."""
 
-    # When L1 Working Memory exceeds this, slice the oldest chunk.
     soft_limit_tokens: int = 3000
-
-    # Hard cap: force immediate truncation if exceeded.
     hard_limit_tokens: int = 6000
-
-    # Number of messages to drop per truncation pass.
     chunk_size: int = 10
+    tokenizer_model: str = "gpt-4o"
+    fallback_truncate: bool = True
+
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
