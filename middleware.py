@@ -1,7 +1,9 @@
 """
-middleware.py — ContextManager: four-tier memory with async compression.
+middleware.py — ContextManager: the primary public API for Sawtooth-Memory.
 
-Usage:
+Drop this between your agent loop and your LLM API call.
+
+Quick start:
     from sawtooth_memory import ContextManager, ContextManagerConfig
 
     config = ContextManagerConfig(soft_limit_tokens=3000)
@@ -9,7 +11,12 @@ Usage:
     async with ContextManager("You are a data analysis agent.", config) as cm:
         await cm.add_message("user", "Analyse Q3 revenue.")
         await cm.add_message("assistant", "Connecting to the database...")
+
         messages = cm.build_prompt()
+        # response = await openai_client.chat.completions.create(
+        #     model="gpt-4o",
+        #     messages=messages,
+        # )
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import logging
 
 from .config import ContextManagerConfig
 from .compressor import OllamaCompressor
+from .exceptions import TokenLimitExceededError
 from .monitor import TokenMonitor
 from .state import (
     ArchivalMemory,
@@ -37,9 +45,24 @@ class ContextManager:
     """
     Middleware that sits between your agent loop and the LLM API.
 
-    Maintains four-tier memory (L0/L1/L1.5/L2). When L1 exceeds the soft
-    limit, the oldest chunk is sliced off and queued for async compression
-    via a background Ollama worker without blocking the main thread.
+    Responsibilities:
+    - Maintains the four-tier memory state (L0 / L1 / L1.5 / L2).
+    - Counts tokens locally via tiktoken (no API call needed).
+    - When L1 exceeds the soft limit, slices the oldest chunk and queues
+      it for async compression via a background Ollama worker.
+    - When L1 exceeds the hard limit, falls back to synchronous truncation
+      or raises TokenLimitExceededError (configurable).
+    - Compiles all tiers into a structured prompt via build_prompt().
+
+    Thread safety:
+        asyncio is single-threaded cooperative. The background worker only
+        mutates shared state between `await` checkpoints, so no explicit
+        locking is required.
+
+    Usage:
+        async with ContextManager(system_prompt, config) as cm:
+            await cm.add_message("user", "...")
+            messages = cm.build_prompt()
     """
 
     def __init__(
@@ -69,14 +92,23 @@ class ContextManager:
             fallback_truncate=self._config.fallback_truncate,
         )
 
+        logger.debug(
+            f"ContextManager initialised. "
+            f"soft_limit={self._config.soft_limit_tokens}, "
+            f"hard_limit={self._config.hard_limit_tokens}, "
+            f"chunk_size={self._config.chunk_size}"
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
+        """Start the background compression worker. Must be called before use."""
         await self._worker.start()
 
     async def stop(self) -> None:
+        """Drain the compression queue and shut down the worker."""
         await self._worker.stop()
 
     async def __aenter__(self) -> "ContextManager":
@@ -96,20 +128,44 @@ class ContextManager:
 
         If the soft token limit is crossed after adding this message,
         the oldest chunk_size messages are sliced off and enqueued for
-        background compression without blocking this call.
+        background compression — without blocking this call.
+
+        If the hard limit is crossed and fallback_truncate is False,
+        raises TokenLimitExceededError.
         """
         msg = Message(role=role, content=content)
         msg.token_count = self._monitor.count_message(msg)
         self._state.l1_working.append(msg)
 
-        if self._monitor.exceeds_soft_limit(self._state):
+        logger.debug(
+            f"add_message: role={role}, tokens={msg.token_count}, "
+            f"l1_total={self._state.l1_working.token_count}"
+        )
+
+        if self._monitor.exceeds_hard_limit(self._state):
+            if not self._config.fallback_truncate:
+                raise TokenLimitExceededError(
+                    f"Working Memory exceeded hard limit of "
+                    f"{self._config.hard_limit_tokens} tokens and "
+                    f"fallback_truncate is disabled."
+                )
+            logger.warning(
+                "Hard token limit reached before compression finished. "
+                "Forcing immediate truncation of oldest messages."
+            )
+            self._force_truncate()
+
+        elif self._monitor.exceeds_soft_limit(self._state):
             self._trigger_compression()
 
     def build_prompt(self) -> list[dict[str, str]]:
         """
         Compile all memory tiers into an OpenAI-compatible messages list.
 
-        The system message is structured as:
+        Returns a list of {"role": "...", "content": "..."} dicts, ready
+        to pass directly to openai.chat.completions.create() or equivalent.
+
+        Structure of the injected system message:
             [SYSTEM_L0]
             <system prompt>
 
@@ -146,18 +202,38 @@ class ContextManager:
         return messages
 
     # ------------------------------------------------------------------
-    # Internal
+    # Internal compression triggers
     # ------------------------------------------------------------------
 
     def _trigger_compression(self) -> None:
+        """
+        Non-blocking: slice the oldest chunk and hand it off to the worker.
+        The main thread continues running immediately.
+        """
         chunk = self._state.l1_working.slice_oldest(self._config.chunk_size)
         if not chunk:
             return
+
         task = CompressionTask(messages=chunk, state=self._state)
         self._worker.enqueue(task)
+
         logger.info(
-            f"Compression triggered: offloaded {len(chunk)} messages to worker."
+            f"Compression triggered: offloaded {len(chunk)} messages to worker. "
+            f"L1 remaining: {self._state.l1_working.token_count} tokens"
         )
+
+    def _force_truncate(self) -> None:
+        """
+        Hard-limit fallback: discard the oldest messages immediately on
+        the main thread without waiting for Ollama.
+        """
+        chunk = self._state.l1_working.slice_oldest(self._config.chunk_size)
+        note = (
+            f"[HARD TRUNCATION: {len(chunk)} messages dropped because the "
+            f"compression worker has not yet caught up.]"
+        )
+        self._state.l2_archival.append_narrative(note)
+        logger.warning(f"Hard truncation: dropped {len(chunk)} messages from L1.")
 
     # ------------------------------------------------------------------
     # Observability
@@ -165,15 +241,31 @@ class ContextManager:
 
     @property
     def state(self) -> MemoryState:
+        """Read-only access to the current MemoryState."""
         return self._state
 
     def get_stats(self) -> dict:
+        """
+        Return a snapshot of current token usage and worker health.
+
+        Returns:
+            {
+                "l0_tokens": int,
+                "l1_tokens": int,
+                "l1_message_count": int,
+                "l1_5_entity_count": int,
+                "l2_tokens": int,
+                "worker": {"processed": int, "failed": int, "queue_depth": int, ...}
+            }
+        """
         return {
             "l0_tokens": self._state.l0_system.token_count,
             "l1_tokens": self._state.l1_working.token_count,
             "l1_message_count": len(self._state.l1_working.messages),
             "l1_5_entity_count": len(self._state.l1_5_entities.entities),
-            "l2_tokens": self._monitor.count_text(self._state.l2_archival.narrative),
+            "l2_tokens": self._monitor.count_text(
+                self._state.l2_archival.narrative
+            ),
             "worker": self._worker.stats,
         }
 
