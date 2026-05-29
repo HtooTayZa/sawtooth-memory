@@ -1,0 +1,202 @@
+"""
+adapter.py — SawtoothLangGraphAdapter
+
+Bidirectional bridge between LangChain's typed message objects and
+Sawtooth-Memory's ContextManager. Performs message-ID deduplication
+so it is safe to call sync_state() on every graph iteration (including
+cycles) without double-ingesting the same messages.
+
+Role mapping (bidirectional):
+    HumanMessage  <->  "user"
+    AIMessage     <->  "assistant"
+    SystemMessage <->  "system"
+    ToolMessage   <->  "tool"
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Sequence
+
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+
+from sawtooth_memory import ContextManager
+from sawtooth_memory.state import MessageRole
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Role <-> LangChain message type mapping tables
+# ---------------------------------------------------------------------------
+
+_LC_TO_ROLE: dict[type[BaseMessage], MessageRole] = {
+    HumanMessage: "user",
+    AIMessage: "assistant",
+    SystemMessage: "system",
+    ToolMessage: "tool",
+}
+
+_ROLE_TO_LC: dict[MessageRole, type[BaseMessage]] = {
+    "user": HumanMessage,
+    "assistant": AIMessage,
+    "system": SystemMessage,
+    "tool": ToolMessage,
+}
+
+
+def _extract_content(msg: BaseMessage) -> str:
+    """
+    Safely extract a plain-text string from any LangChain message.
+
+    LangChain's ``content`` field can be:
+    - A plain ``str``          — returned as-is
+    - A ``list`` of blocks     — each block serialised to JSON / text and
+                                  joined with newlines (covers multimodal
+                                  content, tool call payloads, etc.)
+    - Anything else            — serialised via ``json.dumps``
+    """
+    content = msg.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                # Covers {"type": "text", "text": "..."} and tool-call dicts
+                parts.append(
+                    block.get("text")
+                    or block.get("content")
+                    or json.dumps(block, ensure_ascii=False)
+                )
+            else:
+                parts.append(json.dumps(block, default=str, ensure_ascii=False))
+        return "\n".join(filter(None, parts))
+    # Fallback for any exotic content type
+    return json.dumps(content, default=str, ensure_ascii=False)
+
+
+def _msg_id(msg: BaseMessage) -> str:
+    """
+    Return a stable identifier for a message.
+
+    LangGraph assigns a ``msg.id`` string to each message it creates; fall
+    back to Python's object identity for messages constructed outside the
+    graph (e.g. in tests).
+    """
+    return msg.id if msg.id else str(id(msg))
+
+
+class SawtoothLangGraphAdapter:
+    """
+    Stateful adapter that connects a single LangGraph session to a
+    ``ContextManager`` instance.
+
+    One adapter per graph session / thread.  Create it alongside the
+    ContextManager, then pass *the same instance* into both graph nodes.
+
+    Example::
+
+        cm = ContextManager("You are a helpful agent.", config)
+        adapter = SawtoothLangGraphAdapter(cm)
+
+        async with cm:
+            graph = build_graph(adapter)
+            result = await graph.ainvoke({"messages": [HumanMessage("Hello")]})
+    """
+
+    def __init__(self, context_manager: ContextManager) -> None:
+        self._context_manager = context_manager
+        # Tracks message IDs that have already been fed into the ContextManager
+        # so that cyclical graph iterations don't double-ingest history.
+        self._processed_ids: set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Core API
+    # ------------------------------------------------------------------
+
+    async def sync_state(self, messages: Sequence[BaseMessage]) -> None:
+        """
+        Ingest new messages into the ContextManager.
+
+        Only messages whose IDs are *not* already in ``processed_ids`` are
+        forwarded.  Safe to call on every graph iteration — already-seen
+        messages are silently skipped.
+
+        Args:
+            messages: The full ``state["messages"]`` list from the graph.
+        """
+        new_count = 0
+        for msg in messages:
+            msg_id = _msg_id(msg)
+            if msg_id in self._processed_ids:
+                continue
+
+            role = _LC_TO_ROLE.get(type(msg))
+            if role is None:
+                # Unknown message type — log and skip rather than crashing.
+                logger.warning(
+                    "sync_state: skipping unsupported message type %s "
+                    "(id=%s)",
+                    type(msg).__name__,
+                    msg_id,
+                )
+                # Mark as processed so we don't warn on every cycle.
+                self._processed_ids.add(msg_id)
+                continue
+
+            content = _extract_content(msg)
+            await self._context_manager.add_message(role, content)
+            self._processed_ids.add(msg_id)
+            new_count += 1
+
+        logger.debug(
+            "sync_state: ingested %d new message(s), total processed=%d",
+            new_count,
+            len(self._processed_ids),
+        )
+
+    def get_compiled_prompt(self) -> list[BaseMessage]:
+        """
+        Build an optimised, compressed prompt and convert it to LangChain
+        message objects.
+
+        Returns:
+            An ordered list of LangChain ``BaseMessage`` objects representing
+            the compiled L0 / L1.5 / L2 / active-L1 context windows, ready
+            to pass directly to ``llm.ainvoke()``.
+        """
+        raw_prompt: list[dict[str, str]] = self._context_manager.build_prompt()
+        lc_messages: list[BaseMessage] = []
+
+        for item in raw_prompt:
+            role: str = item.get("role", "user")
+            content: str = item.get("content", "")
+            msg_cls = _ROLE_TO_LC.get(role)  # type: ignore[arg-type]
+            if msg_cls is None:
+                logger.warning(
+                    "get_compiled_prompt: unknown role %r — defaulting to HumanMessage",
+                    role,
+                )
+                msg_cls = HumanMessage
+                
+            if msg_cls is ToolMessage:
+                lc_messages.append(
+                    ToolMessage(content=content, tool_call_id="sawtooth_compressed_state")
+                )
+            else:
+                lc_messages.append(msg_cls(content=content))
+                
+
+        logger.debug(
+            "get_compiled_prompt: compiled %d message(s)", len(lc_messages)
+        )
+        return lc_messages

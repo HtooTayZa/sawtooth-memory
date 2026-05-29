@@ -24,6 +24,12 @@ dev = [
     "pytest-mock>=3.12",
 ]
 
+langgraph = [
+    "langchain-core>=0.2.0",
+    "langgraph>=0.1.0",
+    "tenacity>=8.4.0",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
