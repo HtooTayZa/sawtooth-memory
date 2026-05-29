@@ -15,6 +15,7 @@ import pytest
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    BaseMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -34,16 +35,17 @@ def _make_cm(build_prompt_return=None):
     """Return a mocked ContextManager."""
     cm = MagicMock()
     cm.add_message = AsyncMock()
+    
+    default_return = [
+        {"role": "system", "content": "[SYSTEM_L0]\nYou are a test agent."},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
+    ]
+    
     cm.build_prompt = MagicMock(
-        return_value=build_prompt_return
-        or [
-            {"role": "system", "content": "[SYSTEM_L0]\nYou are a test agent."},
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"},
-        ]
+        return_value=build_prompt_return if build_prompt_return is not None else default_return
     )
     return cm
-
 
 # ---------------------------------------------------------------------------
 # _extract_content
@@ -88,9 +90,12 @@ class TestExtractContent:
 
     def test_non_string_non_list_content_is_serialised(self):
         """Exotic content types should not raise."""
-        msg = HumanMessage(content={"key": "val"})  # type: ignore[arg-type]
-        result = _extract_content(msg)
-        assert "key" in result
+        # Use a MagicMock to bypass LangChain's strict Pydantic initialization
+        msg = MagicMock(spec=BaseMessage)
+        msg.content = {"key": "val"}
+        
+        # json.dumps will output double quotes, so check for exact string match
+        assert _extract_content(msg) == '{"key": "val"}'
 
 
 # ---------------------------------------------------------------------------

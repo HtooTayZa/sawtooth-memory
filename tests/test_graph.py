@@ -33,12 +33,14 @@ def _make_adapter(compiled_prompt=None):
     """Return a SawtoothLangGraphAdapter backed by a mocked ContextManager."""
     cm = MagicMock()
     cm.add_message = AsyncMock()
+    
+    default_prompt = [
+        {"role": "system", "content": "You are a test agent."},
+        {"role": "user", "content": "Hello"},
+    ]
+    
     cm.build_prompt = MagicMock(
-        return_value=compiled_prompt
-        or [
-            {"role": "system", "content": "You are a test agent."},
-            {"role": "user", "content": "Hello"},
-        ]
+        return_value=compiled_prompt if compiled_prompt is not None else default_prompt
     )
     return SawtoothLangGraphAdapter(cm)
 
