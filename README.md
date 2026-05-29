@@ -1,14 +1,13 @@
-````markdown
 # Sawtooth-Memory
 
 **Async context manager middleware for LLM agents.** Solves the ["Lost in the Middle"](https://arxiv.org/abs/2307.03172) problem by dynamically compressing context windows via a local Ollama model running on a background asyncio thread — with zero latency impact on your agent loop.
 
-```text
-your agent loop (or LangGraph)
+```
+your agent loop
       │
       ▼
 ┌─────────────────────┐
-│   ContextManager    │  ← drop-in middleware / framework adapters
+│   ContextManager    │  ← drop-in middleware
 │  ┌───────────────┐  │
 │  │ L0  System    │  │  immutable persona + tool schemas
 │  │ L2  Archive   │  │  compressed history narrative
@@ -20,7 +19,6 @@ your agent loop (or LangGraph)
            ▼
       LLM API call
 ```
-````
 
 ---
 
@@ -29,16 +27,8 @@ your agent loop (or LangGraph)
 ```bash
 pip install sawtooth-memory        # from PyPI (coming soon)
 # or from source:
-git clone [https://github.com/your-org/sawtooth-memory](https://github.com/your-org/sawtooth-memory)
+git clone https://github.com/your-org/sawtooth-memory
 pip install -e ".[dev]"
-
-```
-
-If you are using the native **LangGraph** middleware integration, install the specialized dependencies using the package extra:
-
-```bash
-pip install -e ".[langgraph]"
-
 ```
 
 **Requirements:** Python 3.11+, [Ollama](https://ollama.ai) running locally.
@@ -46,14 +36,11 @@ pip install -e ".[langgraph]"
 ```bash
 ollama serve
 ollama pull phi4   # or any 8B-class model
-
 ```
 
 ---
 
 ## Quick Start
-
-### Standard Agent Loop Middleware
 
 ```python
 import asyncio
@@ -74,42 +61,19 @@ async def main():
 
         # Pass directly to your LLM SDK — works with any OpenAI-compatible API
         messages = cm.build_prompt()
+        # response = await openai_client.chat.completions.create(
+        #     model="gpt-4o", messages=messages
+        # )
 
         # Inspect state
         print(cm.get_stats())
+        # {
+        #   "l0_tokens": 12, "l1_tokens": 47, "l1_message_count": 3,
+        #   "l1_5_entity_count": 0, "l2_tokens": 0,
+        #   "worker": {"processed": 0, "failed": 0, "queue_depth": 0}
+        # }
 
 asyncio.run(main())
-
-```
-
-### Native LangGraph Workflow Integration
-
-Sawtooth-Memory provides a non-intrusive adapter pattern for LangGraph. It acts as a specialized node that intercepts state histories right before your LLM executes, keeping your raw message history untouched while optimizing what your chat model actually processes.
-
-```python
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
-from langgraph.graph import StateGraph, START, END
-from sawtooth_memory import ContextManager, ContextManagerConfig
-from sawtooth_memory.integrations.langgraph import SawtoothLangGraphAdapter, build_sawtooth_graph
-
-# 1. Setup your core ContextManager and the LangGraph Adapter
-config = ContextManagerConfig(soft_limit_tokens=3000)
-cm = ContextManager("You are a helpful software engineering agent.", config)
-adapter = SawtoothLangGraphAdapter(cm)
-
-# 2. Build the compiled graph wrapper (Automatically handles state updates & LLM invocations)
-# Built-in Tenacity retry logic protects against transient 429 and 5xx API errors.
-graph = build_sawtooth_graph(llm=my_chat_model, adapter=adapter)
-
-# 3. Invoke within your active engine runtime context
-async def run_pipeline():
-    async with cm:
-        result = await graph.ainvoke(
-            {"messages": [HumanMessage("Analyze project codebase structure.")], "llm_context": []}
-        )
-        print(result["messages"][-1].content)
-
 ```
 
 ---
@@ -118,28 +82,27 @@ async def run_pipeline():
 
 ### The Four-Tier Memory Model
 
-| Tier     | Name            | Mutability     | Contents                    |
-| -------- | --------------- | -------------- | --------------------------- |
-| **L0**   | System Prompt   | Immutable      | Agent persona, tool schemas |
-| **L1**   | Working Memory  | Sliding window | Last N raw messages         |
-| **L1.5** | Entity Ledger   | KV upsert      | Exact IDs, paths, UUIDs     |
-| **L2**   | Archival Memory | Append-only    | Dense narrative summary     |
+| Tier | Name | Mutability | Contents |
+|------|------|------------|----------|
+| **L0** | System Prompt | Immutable | Agent persona, tool schemas |
+| **L1** | Working Memory | Sliding window | Last N raw messages |
+| **L1.5** | Entity Ledger | KV upsert | Exact IDs, paths, UUIDs |
+| **L2** | Archival Memory | Append-only | Dense narrative summary |
 
 ### Asynchronous Compression Pipeline
 
 When L1 exceeds `soft_limit_tokens`, the middleware **non-blockingly** slices the oldest `chunk_size` messages onto a background asyncio queue. The main agent thread continues without waiting.
 
 The background worker:
-
 1. **Prunes** base64 blobs, stack traces, and verbose JSON noise
 2. **Sends** the cleaned chunk to a local Ollama model with a strict dual-extraction prompt
-3. **Merges** the result: narrative → L2, exact configuration objects / variables → L1.5, raw messages → deleted from L1 sliding window
+3. **Merges** the result: narrative → L2, entities → L1.5, raw messages → deleted
 
 ### Compiled Prompt Format
 
 `build_prompt()` returns a standard OpenAI messages list. The system message is structured as:
 
-```text
+```
 [SYSTEM_L0]
 You are a data analysis agent...
 
@@ -151,10 +114,13 @@ User requested Q3 analysis. You connected to PostgreSQL and found a 14% drop...
   "active_db_connection_id": "conn_994a82",
   "target_table": "sales_q3_2026"
 }
-
 ```
 
 Followed by raw `[WORKING_MEMORY_L1]` turns as normal user/assistant messages.
+
+### Graceful Degradation
+
+If Ollama is unreachable or crashes, the worker writes a truncation note to L2 and continues. The main agent thread is **never** blocked or crashed by a compression failure. Set `fallback_truncate=False` to raise `CompressionError` instead.
 
 ---
 
@@ -176,50 +142,38 @@ config = ContextManagerConfig(
         timeout_seconds=90,
     ),
 )
-
 ```
 
 ---
 
 ## Project Structure
 
-```text
+```
 sawtooth_memory/
-├── __init__.py       # Public API surface
+├── __init__.py       # public API surface
 ├── config.py         # ContextManagerConfig, OllamaConfig
 ├── state.py          # Pydantic v2 schemas: all four memory tiers
-├── monitor.py        # Tiktoken-based local token counting
+├── monitor.py        # tiktoken-based local token counting
 ├── compressor.py     # Ollama async HTTP client + dual-extraction prompt
-├── worker.py         # Asyncio background queue + pipeline + state merger
-├── middleware.py     # ContextManager: main public API
-│
-└── integrations/     # Framework-specific orchestration abstraction layers
-    └── langgraph/
-        ├── __init__.py
-        ├── adapter.py    # Bidirectional conversion & ID duplication handling
-        └── graph.py      # Node factories and StateGraph construction recipes
+├── worker.py         # asyncio background queue + pipeline + state merger
+└── middleware.py     # ContextManager: main public API
 
 tests/
 ├── test_state.py
 ├── test_monitor.py
 ├── test_compressor.py
-├── test_middleware.py
-├── test_adapter.py    # Integrations test suite
-└── test_graph.py      # Graph execution pipeline test suite
-
+└── test_middleware.py
 ```
 
 ---
 
 ## Roadmap
 
-- [x] LangChain / LangGraph adapter
+- [ ] LangChain / LangGraph adapter
 - [ ] AutoGen adapter
-- [ ] Redis queue transport (for multi-process distributed agents)
+- [ ] Redis queue transport (for multi-process agents)
 - [ ] Sliding importance scoring (weight recent tool results more heavily)
 - [ ] Prometheus metrics endpoint
 - [ ] TypeScript port
 
-```
-
-```
+---
