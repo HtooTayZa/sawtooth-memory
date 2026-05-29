@@ -152,45 +152,36 @@ config = ContextManagerConfig(
 
 ---
 
-## Project Structure
-
-```
-
-sawtooth_memory/
-
-├── __init__.py # public API surface
-
-├── config.py # ContextManagerConfig, OllamaConfig
-
-├── state.py # Pydantic v2 schemas: all four memory tiers
-
-├── monitor.py # tiktoken-based local token counting
-
-├── compressor.py # Ollama async HTTP client + dual-extraction prompt
-
-├── worker.py # asyncio background queue + pipeline + state merger
-
-├── middleware.py # ContextManager: main public API
-
-└── integrations/
-
-└── langgraph/
-
-└── adapter.py # LangChain/LangGraph bidirectional adapter
-
-
-
-tests/
-
-├── test_state.py
-
-├── test_monitor.py
-
-├── test_compressor.py
-
-└── test_middleware.py
-
-
+sawtooth-memory/
+├── .github/
+│ └── workflows/
+│ └── test.yml # Automated CI/CD test pipeline
+├── sawtooth_memory/ # Core utility package
+│ ├── integrations/
+│ │ └── langgraph/ # LangGraph specific integrations
+│ │ ├── adapter.py # Adapts sawtooth state to LangGraph
+│ │ └── graph.py # Graph state definitions
+│ ├── compressor.py # Memory compression and truncation logic
+│ ├── config.py # Base configurations
+│ ├── exceptions.py # Custom package exceptions
+│ ├── middleware.py # Intercepts and processes state transitions
+│ ├── monitor.py # State monitoring and telemetry
+│ ├── state.py # Core state management classes
+│ └── worker.py # Background execution handling
+├── tests/ # Pytest test suite
+│ ├── conftest.py # Pytest fixtures and config
+│ ├── test_adapter.py
+│ ├── test_compressor.py
+│ ├── test_graph.py
+│ ├── test_middleware.py
+│ ├── test_monitor.py
+│ └── test_state.py
+├── CODE_OF_CONDUCT.md # Community behavioral guidelines
+├── CONTRIBUTING.md # Developer setup and PR rules
+├── LICENSE # MIT License
+├── pyproject.toml # Project metadata and dependencies
+├── README.md # Project documentation (this file)
+└── SECURITY.md # Vulnerability reporting policy
 
 ```
 
@@ -207,3 +198,4 @@ tests/
 - [ ] Prometheus metrics endpoint
 
 - [ ] TypeScript port
+```
