@@ -1,5 +1,3 @@
-Here is the complete, updated `README.md` file content ready to be copied into your project:
-
 ````markdown
 # Sawtooth-Memory
 
