@@ -208,8 +208,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from .config import CloudConfig
-from .providers import ProviderAdapter, get_adapter
+from sawtooth_memory.config import CloudConfig
+from sawtooth_memory.providers import ProviderAdapter, get_adapter
 
 
 def _is_rate_limit(exc: BaseException) -> bool:

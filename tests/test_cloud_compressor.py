@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from sawtooth_memory.config import CloudConfig, Provider
-from sawtooth_memory.compressor import CloudCompressor
+from sawtooth_memory.providers.compressor import CloudCompressor
 from sawtooth_memory.exceptions import CompressionError
 from sawtooth_memory.providers import (
     AnthropicAdapter,
@@ -640,7 +640,7 @@ class TestRateLimitRetry:
 
             # Patch tenacity wait to be instant in tests
             with patch(
-                "sawtooth_memory.compressor.wait_exponential",
+                "tenacity.wait_exponential",
                 return_value=lambda retry_state: 0,
             ):
                 result = await compressor.compress("text")
@@ -669,7 +669,7 @@ class TestRateLimitRetry:
             mock_gc.return_value = mock_client
 
             with patch(
-                "sawtooth_memory.compressor.wait_exponential",
+                "tenacity.wait_exponential",
                 return_value=lambda retry_state: 0,
             ):
                 with pytest.raises(httpx.HTTPStatusError):
