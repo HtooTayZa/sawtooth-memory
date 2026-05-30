@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 
 from .config import ContextManagerConfig
-from .compressor import OllamaCompressor
+from .compressor import OllamaCompressor, CloudCompressor
 from .exceptions import TokenLimitExceededError
 from .monitor import TokenMonitor
 from .state import (
@@ -70,33 +70,27 @@ class ContextManager:
         system_prompt: str,
         config: ContextManagerConfig | None = None,
     ) -> None:
+        # 1. Assign the config FIRST
         self._config = config or ContextManagerConfig()
-
-        self._monitor = TokenMonitor(
-            model=self._config.tokenizer_model,
-            soft_limit=self._config.soft_limit_tokens,
-            hard_limit=self._config.hard_limit_tokens,
-        )
-
-        sp_tokens = self._monitor.count_text(system_prompt)
+        
+        # 2. Assign the state
         self._state = MemoryState(
-            l0_system=SystemPrompt(content=system_prompt, token_count=sp_tokens),
-            l1_working=WorkingMemory(),
-            l1_5_entities=EntityLedger(),
-            l2_archival=ArchivalMemory(),
+            l0_system=SystemPrompt(content=system_prompt)
         )
+        self._tokenizer = tiktoken.encoding_for_model(
+            self._config.tokenizer_model
+        )
+        self._state.l0_system.token_count = self._count_tokens(system_prompt)
 
-        self._compressor = OllamaCompressor(self._config.ollama)
+        # 3. NOW evaluate the cloud routing logic
+        if self._config.cloud:
+            self._compressor = CloudCompressor(self._config.cloud)
+        else:
+            self._compressor = OllamaCompressor(self._config.ollama)
+
         self._worker = CompressionWorker(
             compressor=self._compressor,
             fallback_truncate=self._config.fallback_truncate,
-        )
-
-        logger.debug(
-            f"ContextManager initialised. "
-            f"soft_limit={self._config.soft_limit_tokens}, "
-            f"hard_limit={self._config.hard_limit_tokens}, "
-            f"chunk_size={self._config.chunk_size}"
         )
 
     # ------------------------------------------------------------------

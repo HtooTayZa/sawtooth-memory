@@ -15,7 +15,8 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from .compressor import OllamaCompressor
+from typing import Union
+from .compressor import OllamaCompressor, CloudCompressor
 from .exceptions import CompressionError, OllamaConnectionError
 from .state import MemoryState, Message
 
@@ -54,7 +55,7 @@ class CompressionWorker:
 
     def __init__(
         self,
-        compressor: OllamaCompressor,
+        compressor: Union[OllamaCompressor, CloudCompressor],
         fallback_truncate: bool = True,
     ) -> None:
         self._compressor = compressor
