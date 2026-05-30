@@ -225,19 +225,10 @@ from sawtooth_memory import (
     ContextManagerConfig,
 )
 
-from sawtooth_memory import ContextManagerConfig
-from sawtooth_memory.config import CloudConfig, Provider
-
-# Cloud-agnostic configuration setup
 config = ContextManagerConfig(
     soft_limit_tokens=3000,
     hard_limit_tokens=6000,
-    fallback_truncate=True,
-    cloud=CloudConfig(
-        provider=Provider.ANTHROPIC,
-        model="claude-3-5-haiku-latest",
-        api_key="your-api-key-here"
-    )
+    chunk_size=10,
 )
 
 async def main():
@@ -383,7 +374,19 @@ Probably unnecessary:
 
 ---
 
+To cleanly update your **Configuration** section in the `README.md` to reflect the newly added multi-provider cloud support, you can replace that entire section with the following fully updated documentation.
+
+It now showcases both the local-first Ollama path and the new production-ready cloud path side by side, making it clear and complete for your users.
+
+---
+
 # Configuration
+
+Sawtooth Memory is configured using Pydantic models. You can back your context compression loop with either a local Ollama stack or cloud frontier models (OpenAI, Anthropic, or Gemini).
+
+### Local Backend (Ollama)
+
+To run entirely on local hardware, pass an `OllamaConfig` block.
 
 ```python
 from sawtooth_memory import (
@@ -404,6 +407,49 @@ config = ContextManagerConfig(
         timeout_seconds=90,
     ),
 )
+```
+
+````
+
+### Cloud Backend (OpenAI, Anthropic, Gemini)
+
+To offload background compression tasks to a cloud API provider, configure a `CloudConfig` block instead. This mode utilizes native structured outputs and built-in exponential backoff for HTTP 429 rate limits.
+
+```python
+from sawtooth_memory import ContextManagerConfig
+from sawtooth_memory.config import CloudConfig, Provider
+
+config = ContextManagerConfig(
+    soft_limit_tokens=3000,
+    hard_limit_tokens=6000,
+    chunk_size=10,
+    fallback_truncate=True,
+
+    # Configure any supported provider: Provider.OPENAI, Provider.ANTHROPIC, or Provider.GEMINI
+    cloud=CloudConfig(
+        provider=Provider.ANTHROPIC,
+        model="claude-3-5-haiku-latest",
+        api_key="your-api-key-here",
+        timeout_seconds=60,
+        # base_url is optional: use to route via Helicone, LiteLLM, or Azure OpenAI
+        base_url=None,
+    ),
+)
+
+```
+
+### Configuration Parameters
+
+| Parameter           | Type           | Default    | Description                                                                                       |
+| ------------------- | -------------- | ---------- | ------------------------------------------------------------------------------------------------- |
+| `soft_limit_tokens` | `int`          | `3000`     | Token threshold that triggers background conversation compression.                                |
+| `hard_limit_tokens` | `int`          | `6000`     | Maximum token window size allowed before strict enforcement occurs.                               |
+| `chunk_size`        | `int`          | `10`       | Number of older conversation messages sliced off into each compression worker chunk.              |
+| `tokenizer_model`   | `str`          | `"gpt-4o"` | Tokenizer encoding scheme utilized for active memory tracking calculation.                        |
+| `fallback_truncate` | `bool`         | `True`     | If `True`, falls back to tracking-truncation strings when compression fails, ensuring continuity. |
+| `ollama`            | `OllamaConfig` | _Factory_  | Active backend properties dedicated to your local Ollama runtime loop.                            |
+| `cloud`             | `CloudConfig`  | `None`     | Active properties dedicated to Cloud API orchestration rules.                                     |
+
 ```
 
 ---
@@ -478,3 +524,4 @@ ruff check .
 # License
 
 MIT
+````
