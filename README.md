@@ -6,10 +6,10 @@ Sawtooth Memory mitigates context-window degradation by continuously compressing
 
 Instead of storing entire conversations indefinitely or relying purely on retrieval, Sawtooth maintains a layered memory model:
 
-* recent messages remain verbatim
-* important entities persist exactly
-* older context compresses into narrative state
-* compression runs asynchronously in the background
+- recent messages remain verbatim
+- important entities persist exactly
+- older context compresses into narrative state
+- compression runs asynchronously in the background
 
 The result is bounded prompt growth with stable long-session behavior.
 
@@ -42,11 +42,11 @@ The name "Sawtooth" comes from the token usage pattern created by periodic compr
 
 Long-running agents eventually fail for predictable reasons:
 
-* context windows fill with stale history
-* important information gets buried
-* summarization loses exact values
-* retrieval systems lose conversational continuity
-* synchronous compression blocks the main loop
+- context windows fill with stale history
+- important information gets buried
+- summarization loses exact values
+- retrieval systems lose conversational continuity
+- synchronous compression blocks the main loop
 
 Most memory systems optimize for storage or retrieval.
 
@@ -71,10 +71,10 @@ Sawtooth uses four memory tiers.
 
 Contains:
 
-* system prompts
-* tool schemas
-* agent rules
-* static instructions
+- system prompts
+- tool schemas
+- agent rules
+- static instructions
 
 L0 never changes.
 
@@ -98,13 +98,13 @@ This layer exists because summarization is lossy.
 
 Things that must remain exact:
 
-* UUIDs
-* database IDs
-* file paths
-* API keys references
-* table names
-* timestamps
-* active resources
+- UUIDs
+- database IDs
+- file paths
+- API keys references
+- table names
+- timestamps
+- active resources
 
 Example:
 
@@ -150,9 +150,9 @@ When L1 exceeds the configured soft limit:
 3. noisy data is pruned
 4. cleaned content is sent to a local Ollama model
 5. extracted outputs are merged into:
+   - L2 narrative memory
+   - L1.5 entity state
 
-   * L2 narrative memory
-   * L1.5 entity state
 6. original messages are removed from L1
 
 This creates a repeating "sawtooth" token profile rather than monotonic prompt growth.
@@ -205,8 +205,8 @@ pip install -e ".[langgraph]"
 
 Requirements:
 
-* Python 3.11+
-* Ollama running locally
+- Python 3.11+
+- Either a local Ollama instance running OR api keys for cloud backends (OpenAI, Anthropic, Gemini)
 
 ```bash
 ollama serve
@@ -225,10 +225,19 @@ from sawtooth_memory import (
     ContextManagerConfig,
 )
 
+from sawtooth_memory import ContextManagerConfig
+from sawtooth_memory.config import CloudConfig, Provider
+
+# Cloud-agnostic configuration setup
 config = ContextManagerConfig(
     soft_limit_tokens=3000,
     hard_limit_tokens=6000,
-    chunk_size=10,
+    fallback_truncate=True,
+    cloud=CloudConfig(
+        provider=Provider.ANTHROPIC,
+        model="claude-3-5-haiku-latest",
+        api_key="your-api-key-here"
+    )
 )
 
 async def main():
@@ -297,9 +306,9 @@ Recent conversation turns remain verbatim beneath the system message.
 
 If compression fails:
 
-* the agent loop continues
-* the worker records a degradation event
-* old messages may be truncated depending on configuration
+- the agent loop continues
+- the worker records a degradation event
+- old messages may be truncated depending on configuration
 
 By default:
 
@@ -323,11 +332,11 @@ to raise `CompressionError` instead.
 
 Sawtooth is not:
 
-* a vector database
-* a retrieval framework
-* a persistent knowledge graph
-* a semantic search engine
-* a replacement for RAG
+- a vector database
+- a retrieval framework
+- a persistent knowledge graph
+- a semantic search engine
+- a replacement for RAG
 
 It is prompt-state middleware.
 
@@ -335,11 +344,11 @@ Sawtooth manages conversational survivability inside bounded context windows.
 
 It works alongside:
 
-* RAG pipelines
-* vector stores
-* MCP tools
-* LangGraph persistence
-* external memory systems
+- RAG pipelines
+- vector stores
+- MCP tools
+- LangGraph persistence
+- external memory systems
 
 ---
 
@@ -358,19 +367,19 @@ It works alongside:
 
 Good fit:
 
-* long-running autonomous agents
-* coding agents
-* research agents
-* multi-tool workflows
-* persistent orchestration loops
-* local-first agent stacks
+- long-running autonomous agents
+- coding agents
+- research agents
+- multi-tool workflows
+- persistent orchestration loops
+- local-first agent stacks
 
 Probably unnecessary:
 
-* short chats
-* single-shot tasks
-* stateless pipelines
-* retrieval-heavy systems with minimal dialogue state
+- short chats
+- single-shot tasks
+- stateless pipelines
+- retrieval-heavy systems with minimal dialogue state
 
 ---
 
@@ -401,14 +410,14 @@ config = ContextManagerConfig(
 
 # Roadmap
 
-* [x] LangGraph adapter
-* [ ] AutoGen adapter
-* [ ] Redis-backed worker transport
-* [ ] Adaptive salience scoring
-* [ ] Recursive archive compression
-* [ ] Hybrid retrieval integration
-* [ ] Prometheus metrics
-* [ ] TypeScript implementation
+- [x] LangGraph adapter
+- [ ] AutoGen adapter
+- [ ] Redis-backed worker transport
+- [ ] Adaptive salience scoring
+- [ ] Recursive archive compression
+- [ ] Hybrid retrieval integration
+- [ ] Prometheus metrics
+- [ ] TypeScript implementation
 
 ---
 
@@ -425,6 +434,12 @@ sawtooth-memory/
 │   │   └── langgraph/
 │   │       ├── adapter.py          # LangGraph adapter layer
 │   │       └── graph.py            # Graph state definitions
+│   │
+│   ├── providers/
+│   │   ├── __init__.py
+│   │   ├── adapter.py
+│   │   ├── compressor.py
+│   │   └── factory.py
 │   │
 │   ├── compressor.py               # Compression + summarization pipeline
 │   ├── config.py                   # Configuration models
