@@ -1,0 +1,78 @@
+name: Bug Report
+description: Report a bug, crash, or unexpected behavior in Sawtooth Memory.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please provide as much detail as possible to help us reproduce and fix it.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+      placeholder: When the background CompressionWorker runs, the agent loop raises a TokenLimitExceededError...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Reproducible Example
+      description: Please provide a minimal Python script that reproduces the issue.
+      render: python
+      value: |
+        import asyncio
+        from sawtooth_memory import ContextManager
+
+        # Paste your minimal reproducible code here
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: input
+    id: sawtooth-version
+    attributes:
+      label: Sawtooth Memory Version
+      description: Which version are you using? (e.g., 0.1.0 or main branch)
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python-version
+    attributes:
+      label: Python Version
+      description: Which version of Python are you running?
+      options:
+        - "3.11"
+        - "3.12"
+        - "3.13"
+        - "Other (please specify in environment details)"
+    validations:
+      required: true
+
+  - type: input
+    id: env-details
+    attributes:
+      label: Environment & Backend
+      description: What OS are you on, and which LLM backend are you using?
+      placeholder: Ubuntu 22.04, local Ollama (phi4)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback / Logs
+      description: Paste the full traceback or relevant logs here.
+      render: shell

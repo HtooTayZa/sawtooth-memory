@@ -1,0 +1,40 @@
+name: Feature Request
+description: Propose a new feature, integration, or enhancement for Sawtooth Memory.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest in improving Sawtooth! Please fill out the sections below to help us understand your proposal.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of what the problem is.
+      placeholder: I am building a workflow with AutoGen, but the current LangGraph adapter doesn't map to AutoGen's state...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the solution you'd like
+      description: How should this feature work? Feel free to include pseudocode or desired API signatures.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Describe alternatives you've considered
+      description: A clear and concise description of any alternative solutions or workarounds you've tried.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      description: Are you willing to submit a Pull Request to implement this feature?
+      options:
+        - label: Yes, I am willing to submit a PR!
