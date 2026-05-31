@@ -1,12 +1,12 @@
 import asyncio
 from sawtooth_memory import ContextManager
-from sawtooth_memory.config import SawtoothConfig, OllamaConfig
-# Imported for visibility; ContextManager handles the worker lifecycle automatically via 'async with'
 from sawtooth_memory.worker import CompressionWorker 
+from sawtooth_memory import ContextManagerConfig
+from sawtooth_memory.config import OllamaConfig
 
 async def main():
     # 1. Initialize configuration (using local Ollama for the example)
-    config = SawtoothConfig(
+    config = ContextManagerConfig(
         ollama=OllamaConfig(model="llama3"),
         fallback_truncate=True
     )
