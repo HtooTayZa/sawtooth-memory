@@ -58,17 +58,95 @@ class WorkingMemory(BaseModel):
 
 
 class EntityLedger(BaseModel):
-    """L1.5 — Key-value store of exact deterministic values extracted from history."""
+    """L1.5 — High-fidelity key-value cache of exact deterministic values.
 
-    entities: dict[str, str] = Field(default_factory=dict)
+    Storage model
+    -------------
+    Each key maps to a **list** of observed values in chronological order
+    (oldest first).  When the same key is extracted across multiple
+    compression waves (e.g. ``connection_id`` first seen as ``"conn-A"``
+    and later as ``"conn-B"``), both values are preserved rather than the
+    earlier one being silently overwritten.
+
+    Backwards-compatible accessors
+    --------------------------------
+    ``get_latest(key)``   — returns the most-recently observed value (the
+                            old "current" semantic).
+    ``get_history(key)``  — returns the full ordered value list.
+    ``to_json_str()``     — renders each key as its *latest* value so the
+                            prompt compiler produces the same compact KV
+                            block it always has, but adds a ``_history``
+                            sub-key whenever multiple distinct values exist
+                            so agents can reference earlier values if needed.
+
+    Rolling window
+    --------------
+    To prevent unbounded growth during very long sessions, each key retains
+    at most ``max_history_per_key`` values (default 10).  When the list is
+    full the oldest entry is evicted before the new value is appended.
+    """
+
+    entities: dict[str, list[str]] = Field(default_factory=dict)
+    max_history_per_key: int = Field(default=10, exclude=True)
 
     def upsert(self, new_entities: dict[str, str]) -> None:
-        self.entities.update(new_entities)
+        """Merge *new_entities* into the ledger with conflict preservation.
+
+        For every key in *new_entities*:
+        - If the key is new, create a single-element list.
+        - If the key already exists and the incoming value differs from the
+          most-recently stored value, append the new value (up to
+          ``max_history_per_key`` unique entries, evicting the oldest when
+          the window is full).
+        - If the incoming value is identical to the current latest value,
+          the call is a no-op for that key (avoids duplicating identical
+          extractions from overlapping compression waves).
+        """
+        for key, value in new_entities.items():
+            value = str(value)
+            if key not in self.entities:
+                self.entities[key] = [value]
+            else:
+                history = self.entities[key]
+                # Skip exact duplicate of the most-recent value.
+                if history and history[-1] == value:
+                    continue
+                history.append(value)
+                # Enforce the rolling window: evict the oldest entry.
+                if len(history) > self.max_history_per_key:
+                    self.entities[key] = history[-self.max_history_per_key:]
+
+    def get_latest(self, key: str) -> str | None:
+        """Return the most-recently extracted value for *key*, or ``None``."""
+        history = self.entities.get(key)
+        return history[-1] if history else None
+
+    def get_history(self, key: str) -> list[str]:
+        """Return the full ordered history of values for *key* (oldest first)."""
+        return list(self.entities.get(key, []))
 
     def to_json_str(self) -> str:
+        """Serialise the ledger for prompt injection.
+
+        Each key is rendered as its *latest* value so the compiled prompt
+        remains compact and backward-compatible with the existing prompt
+        format.  Keys that have accumulated multiple distinct values also
+        receive a ``<key>__history`` companion entry so agents (and
+        downstream tooling) can inspect the full provenance without having
+        to parse anything special.
+        """
         import json
 
-        return json.dumps(self.entities, indent=2)
+        flat: dict[str, str] = {}
+        for key, history in self.entities.items():
+            if not history:
+                continue
+            flat[key] = history[-1]
+            if len(history) > 1:
+                # Surface earlier values as a lightweight audit trail.
+                flat[f"{key}__history"] = " → ".join(history[:-1])
+
+        return json.dumps(flat, indent=2)
 
 
 class ArchivalMemory(BaseModel):
