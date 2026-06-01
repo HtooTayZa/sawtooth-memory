@@ -286,3 +286,27 @@ class ContextManager:
             f"entities={stats['l1_5_entity_count']}, "
             f"queue={stats['worker']['queue_depth']}>"
         )
+        
+    async def health_check(self) -> dict:
+        """
+        Verifies runtime configurations and basic initialization readiness.
+        Returns a diagnostic report dictionary. Raises ValueError on broken configurations.
+        """
+        report = {"status": "healthy", "checks": {}}
+
+        # 1. Validate Token Configurations
+        if self.config.soft_limit_tokens >= self.config.hard_limit_tokens:
+            report["status"] = "unhealthy"
+            raise ValueError(
+                f"Configuration Error: soft_limit_tokens ({self.config.soft_limit_tokens}) "
+                f"must be strictly less than hard_limit_tokens ({self.config.hard_limit_tokens})."
+            )
+        report["checks"]["configuration"] = "OK"
+
+        # 2. Verify Background Worker State
+        if getattr(self, "_worker", None) and self._worker._running:
+            report["checks"]["worker_status"] = "RUNNING"
+        else:
+            report["checks"]["worker_status"] = "STOPPED"
+
+        return report

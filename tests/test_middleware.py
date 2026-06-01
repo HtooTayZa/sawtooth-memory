@@ -156,3 +156,26 @@ class TestRepr:
             r = repr(cm)
             assert "ContextManager" in r
             assert "l1=" in r
+
+class TestHealthCheck:
+    @pytest.mark.asyncio
+    async def test_health_check_passes_valid_config(self, config):
+        async with ContextManager("Sys.", config) as cm:
+            report = await cm.health_check()
+            assert report["status"] == "healthy"
+            assert report["checks"]["configuration"] == "OK"
+            assert report["checks"]["worker_status"] == "RUNNING"
+
+    @pytest.mark.asyncio
+    async def test_health_check_raises_on_invalid_limits(self):
+        # Setup: Soft limit is dangerously higher than Hard limit
+        bad_config = ContextManagerConfig(
+            soft_limit_tokens=500,
+            hard_limit_tokens=200,
+            chunk_size=3
+        )
+        cm = ContextManager("Sys.", bad_config)
+        
+        with pytest.raises(ValueError, match="strictly less than hard_limit_tokens"):
+            await cm.health_check()
+            
