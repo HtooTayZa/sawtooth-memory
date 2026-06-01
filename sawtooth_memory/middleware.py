@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 
+from typing import Any
 from .config import ContextManagerConfig
 from .compressor import CloudCompressor, OllamaCompressor
 from .exceptions import TokenLimitExceededError
@@ -89,6 +90,8 @@ class ContextManager:
         )
 
         # 3. Dynamic Compressor Routing
+
+        self._compressor: CloudCompressor | OllamaCompressor
         if self._config.cloud:
             self._compressor = CloudCompressor(self._config.cloud)
         else:
@@ -190,9 +193,7 @@ class ContextManager:
         system_parts.append(f"[SYSTEM_L0]\n{state.l0_system.content}")
 
         if state.l2_archival.narrative.strip():
-            system_parts.append(
-                f"[ARCHIVE_L2]\n{state.l2_archival.narrative.strip()}"
-            )
+            system_parts.append(f"[ARCHIVE_L2]\n{state.l2_archival.narrative.strip()}")
 
         if state.l1_5_entities.entities:
             system_parts.append(
@@ -270,9 +271,7 @@ class ContextManager:
             "l1_tokens": self._state.l1_working.token_count,
             "l1_message_count": len(self._state.l1_working.messages),
             "l1_5_entity_count": len(self._state.l1_5_entities.entities),
-            "l2_tokens": self._monitor.count_text(
-                self._state.l2_archival.narrative
-            ),
+            "l2_tokens": self._monitor.count_text(self._state.l2_archival.narrative),
             "worker": self._worker.stats,
         }
 
@@ -286,20 +285,21 @@ class ContextManager:
             f"entities={stats['l1_5_entity_count']}, "
             f"queue={stats['worker']['queue_depth']}>"
         )
-        
-    async def health_check(self) -> dict:
+
+    async def health_check(self) -> dict[str, Any]:
         """
         Verifies runtime configurations and basic initialization readiness.
         Returns a diagnostic report dictionary. Raises ValueError on broken configurations.
         """
-        report = {"status": "healthy", "checks": {}}
+        # Type hint the dictionary so mypy knows the values can be nested/dynamic
+        report: dict[str, Any] = {"status": "healthy", "checks": {}}
 
         # 1. Validate Token Configurations
-        if self.config.soft_limit_tokens >= self.config.hard_limit_tokens:
+        if self._config.soft_limit_tokens >= self._config.hard_limit_tokens:
             report["status"] = "unhealthy"
             raise ValueError(
-                f"Configuration Error: soft_limit_tokens ({self.config.soft_limit_tokens}) "
-                f"must be strictly less than hard_limit_tokens ({self.config.hard_limit_tokens})."
+                f"Configuration Error: soft_limit_tokens ({self._config.soft_limit_tokens}) "
+                f"must be strictly less than hard_limit_tokens ({self._config.hard_limit_tokens})."
             )
         report["checks"]["configuration"] = "OK"
 
