@@ -19,11 +19,10 @@ Quick start:
         # )
 """
 
-from __future__ import annotations
-
+import asyncio
 import logging
-
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional, Literal
 from .config import ContextManagerConfig
 from .compressor import CloudCompressor, OllamaCompressor
 from .exceptions import TokenLimitExceededError
@@ -37,51 +36,56 @@ from .state import (
     SystemPrompt,
     WorkingMemory,
 )
-from .worker import CompressionTask, CompressionWorker
+from .worker import CompressionWorker, CompressionTask
+from .events.bus import EventBus, get_event_bus
+from .events.types import (
+    CompressionCycleStartEvent,
+    EntityAnchoredEvent,
+    L1EvictionEvent,
+)
+from .journal import AsyncCompressionJournal
 
 logger = logging.getLogger(__name__)
 
 
 class ContextManager:
-    """
-    Middleware that sits between your agent loop and the LLM API.
-
-    Responsibilities:
-    - Maintains the four-tier memory state (L0 / L1 / L1.5 / L2).
-    - Counts tokens locally via tiktoken (no API call needed).
-    - When L1 exceeds the soft limit, slices the oldest chunk and queues
-      it for async compression via a background Ollama or Cloud worker.
-    - When L1 exceeds the hard limit, falls back to synchronous truncation
-      or raises TokenLimitExceededError (configurable).
-    - Compiles all tiers into a structured prompt via build_prompt().
-
-    Thread safety:
-        asyncio is single-threaded cooperative. The background worker only
-        mutates shared state between `await` checkpoints, so no explicit
-        locking is required.
-
-    Usage:
-        async with ContextManager(system_prompt, config) as cm:
-            await cm.add_message("user", "...")
-            messages = cm.build_prompt()
-    """
-
     def __init__(
         self,
         system_prompt: str,
         config: ContextManagerConfig | None = None,
+        *,
+        enable_events: bool = True,
+        journal_path: Optional[Path] = None,
     ) -> None:
-        # 1. Assign configuration first to prevent AttributeError
         self._config = config or ContextManagerConfig()
+        self._enable_events = enable_events
 
+        # 1. Initialize Event Bus and Journal FIRST
+        self._event_bus: Optional[EventBus] = None
+        self._journal: Optional[AsyncCompressionJournal] = None
+
+        if self._enable_events:
+            self._event_bus = get_event_bus()
+
+            # Localize the journal instance to this ContextManager
+            j_path = journal_path or Path("./sawtooth_compression_journal.jsonl")
+            self._journal = AsyncCompressionJournal(j_path)
+
+            from .events.handlers import make_journal_handler
+
+            # Assign to a variable first so Ruff doesn't wrap the line
+            handler = make_journal_handler(self._journal)
+            self._event_bus.subscribe("compression.cycle_complete", handler)  # type: ignore[arg-type]
+
+        # 2. Token monitor now receives the initialized event_bus
         self._monitor = TokenMonitor(
             model=self._config.tokenizer_model,
             soft_limit=self._config.soft_limit_tokens,
             hard_limit=self._config.hard_limit_tokens,
+            event_bus=self._event_bus,
         )
 
         sp_tokens = self._monitor.count_text(system_prompt)
-        # 2. Initialize memory state
         self._state = MemoryState(
             l0_system=SystemPrompt(content=system_prompt, token_count=sp_tokens),
             l1_working=WorkingMemory(),
@@ -89,8 +93,25 @@ class ContextManager:
             l2_archival=ArchivalMemory(),
         )
 
-        # 3. Dynamic Compressor Routing
+        # 3. Bind the Entity Ledger telemetry callback
+        if self._enable_events and self._event_bus:
 
+            def handle_ledger_mutation(key: str, value: str, op: str):
+                # 3. Bind the Entity Ledger telemetry callback
+                if self._enable_events and self._event_bus:
+
+                    def handle_ledger_mutation(
+                        key: str, value: str, op: Literal["insert", "update", "delete"]
+                    ):
+                        if self._event_bus:
+                            event = EntityAnchoredEvent(
+                                entity_key=key, entity_value=value, operation=op
+                            )
+                            asyncio.create_task(self._event_bus.emit(event))
+
+            self._state.l1_5_entities.set_event_callback(handle_ledger_mutation)
+
+        # 4. Compression backend & Worker
         self._compressor: CloudCompressor | OllamaCompressor
         if self._config.cloud:
             self._compressor = CloudCompressor(self._config.cloud)
@@ -100,26 +121,27 @@ class ContextManager:
         self._worker = CompressionWorker(
             compressor=self._compressor,
             fallback_truncate=self._config.fallback_truncate,
+            event_bus=self._event_bus,
+            journal=self._journal,
         )
 
         logger.debug(
             f"ContextManager initialised. "
             f"soft_limit={self._config.soft_limit_tokens}, "
             f"hard_limit={self._config.hard_limit_tokens}, "
-            f"chunk_size={self._config.chunk_size}"
+            f"chunk_size={self._config.chunk_size}, "
+            f"events_enabled={self._enable_events}"
         )
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     async def start(self) -> None:
-        """Start the background compression worker. Must be called before use."""
+        if self._enable_events and self._journal:
+            await self._journal.start()
         await self._worker.start()
 
     async def stop(self) -> None:
-        """Drain the compression queue and shut down the worker."""
         await self._worker.stop()
+        if self._enable_events and self._journal:
+            await self._journal.stop()  # Stops just this agent's journal instance
 
     async def __aenter__(self) -> "ContextManager":
         await self.start()
@@ -142,6 +164,9 @@ class ContextManager:
 
         If the hard limit is crossed and fallback_truncate is False,
         raises TokenLimitExceededError.
+
+        When events are enabled, this method emits L1 eviction events
+        and compression start events.
         """
         msg = Message(role=role, content=content)
         msg.token_count = self._monitor.count_message(msg)
@@ -152,6 +177,7 @@ class ContextManager:
             f"l1_total={self._state.l1_working.token_count}"
         )
 
+        # Hard limit check (immediate action, no background)
         if self._monitor.exceeds_hard_limit(self._state):
             if not self._config.fallback_truncate:
                 raise TokenLimitExceededError(
@@ -165,8 +191,9 @@ class ContextManager:
             )
             self._force_truncate()
 
+        # Soft limit check → trigger async compression
         elif self._monitor.exceeds_soft_limit(self._state):
-            self._trigger_compression()
+            await self._trigger_compression()
 
     def build_prompt(self) -> list[dict[str, str]]:
         """
@@ -213,27 +240,71 @@ class ContextManager:
     # Internal compression triggers
     # ------------------------------------------------------------------
 
-    def _trigger_compression(self) -> None:
+    async def _trigger_compression(self) -> None:
         """
         Non-blocking: slice the oldest chunk and hand it off to the worker.
         The main thread continues running immediately.
+
+        If events are enabled, emits a CompressionCycleStartEvent and
+        (later in the worker) the completion/failure events.
         """
         chunk = self._state.l1_working.slice_oldest(self._config.chunk_size)
         if not chunk:
             return
 
-        task = CompressionTask(messages=chunk, state=self._state)
+        # Generate a unique cycle ID for this compression run
+        import uuid
+
+        cycle_id = str(uuid.uuid4())
+
+        # Emit start event if bus exists
+        if self._event_bus:
+            await self._event_bus.emit(
+                CompressionCycleStartEvent(
+                    cycle_id=cycle_id,
+                    current_l1_tokens=self._state.l1_working.token_count,
+                    chunk_size=self._config.chunk_size,
+                    session_id=None,  # can be extended later
+                )
+            )
+
+        # Emit L1 eviction event (this compression will evict these messages)
+        if self._event_bus:
+            evicted_tokens = sum(m.token_count for m in chunk)
+            await self._event_bus.emit(
+                L1EvictionEvent(
+                    tokens_evicted=evicted_tokens,
+                    messages_evicted=len(chunk),
+                    tokens_remaining_l1=self._state.l1_working.token_count,
+                    evicted_message_ids=[m.id for m in chunk],
+                    trigger="soft_limit_exceeded",
+                    session_id=None,
+                    cycle_id=cycle_id,  # link to compression cycle
+                )
+            )
+
+        # Create task with cycle_id so worker can correlate events
+        task = CompressionTask(
+            messages=chunk,
+            state=self._state,
+            cycle_id=cycle_id,
+        )
         self._worker.enqueue(task)
 
         logger.info(
             f"Compression triggered: offloaded {len(chunk)} messages to worker. "
-            f"L1 remaining: {self._state.l1_working.token_count} tokens"
+            f"L1 remaining: {self._state.l1_working.token_count} tokens, "
+            f"cycle_id={cycle_id}"
         )
 
     def _force_truncate(self) -> None:
         """
         Hard-limit fallback: discard the oldest messages immediately on
         the main thread without waiting for Ollama/Cloud.
+
+        Note: This does NOT emit events because it's a fallback path
+        and not a full compression cycle. The journal remains
+        unaffected (only complete cycles are logged).
         """
         chunk = self._state.l1_working.slice_oldest(self._config.chunk_size)
         note = (
@@ -291,7 +362,6 @@ class ContextManager:
         Verifies runtime configurations and basic initialization readiness.
         Returns a diagnostic report dictionary. Raises ValueError on broken configurations.
         """
-        # Type hint the dictionary so mypy knows the values can be nested/dynamic
         report: dict[str, Any] = {"status": "healthy", "checks": {}}
 
         # 1. Validate Token Configurations
@@ -308,5 +378,15 @@ class ContextManager:
             report["checks"]["worker_status"] = "RUNNING"
         else:
             report["checks"]["worker_status"] = "STOPPED"
+
+        # 3. (Optional) Check event bus and journal health
+        if self._enable_events:
+            report["checks"]["events"] = "ENABLED"
+            if self._journal:
+                report["checks"]["journal_path"] = str(self._journal.path)
+            else:
+                report["checks"]["journal"] = "NOT_INITIALIZED"
+        else:
+            report["checks"]["events"] = "DISABLED"
 
         return report
