@@ -90,3 +90,10 @@ class HardLimitReachedEvent(SawtoothEvent):
     current_tokens: int = 0
     soft_limit: int = 0
     hard_limit: int = 0
+
+
+@dataclass
+class CompressionCycleStartEvent(SawtoothEvent):
+    event_type: Literal["compression.cycle_started"] = "compression.cycle_started"
+    current_l1_tokens: int = 0
+    chunk_size: int = 0

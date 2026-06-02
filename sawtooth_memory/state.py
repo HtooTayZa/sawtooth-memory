@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Callable, Literal, Optional
-
-from pydantic import BaseModel, Field
+from uuid import uuid4
+from pydantic import BaseModel, Field, PrivateAttr
 
 MessageRole = Literal["user", "assistant", "system", "tool"]
 
@@ -27,6 +27,7 @@ MessageRole = Literal["user", "assistant", "system", "tool"]
 class Message(BaseModel):
     """A single turn in Working Memory (L1)."""
 
+    id: str = Field(default_factory=lambda: str(uuid4()))
     role: MessageRole
     content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -101,9 +102,10 @@ class EntityLedger(BaseModel):
 
     entities: dict[str, list[str]] = Field(default_factory=dict)
     max_history_per_key: int = Field(default=10, exclude=True)
+
     _event_callback: Optional[
         Callable[[str, str, Literal["insert", "update"]], None]
-    ] = Field(default=None, exclude=True)
+    ] = PrivateAttr(default=None)
 
     def set_event_callback(
         self,
