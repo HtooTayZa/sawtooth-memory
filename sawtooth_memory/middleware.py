@@ -19,7 +19,6 @@ Quick start:
         # )
 """
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Optional, Literal
@@ -92,22 +91,18 @@ class ContextManager:
             l1_5_entities=EntityLedger(),
             l2_archival=ArchivalMemory(),
         )
-
         # 3. Bind the Entity Ledger telemetry callback
         if self._enable_events and self._event_bus:
 
-            def handle_ledger_mutation(key: str, value: str, op: str):
-                # 3. Bind the Entity Ledger telemetry callback
-                if self._enable_events and self._event_bus:
-
-                    def handle_ledger_mutation(
-                        key: str, value: str, op: Literal["insert", "update", "delete"]
-                    ):
-                        if self._event_bus:
-                            event = EntityAnchoredEvent(
-                                entity_key=key, entity_value=value, operation=op
-                            )
-                            asyncio.create_task(self._event_bus.emit(event))
+            def handle_ledger_mutation(
+                key: str, value: str, op: Literal["insert", "update", "delete"]
+            ):
+                if self._event_bus:
+                    event = EntityAnchoredEvent(
+                        entity_key=key, entity_value=value, operation=op
+                    )
+                    # Safely emit from this synchronous function
+                    self._event_bus.emit_nowait(event)
 
             self._state.l1_5_entities.set_event_callback(handle_ledger_mutation)
 
@@ -142,6 +137,10 @@ class ContextManager:
         await self._worker.stop()
         if self._enable_events and self._journal:
             await self._journal.stop()  # Stops just this agent's journal instance
+        if self._enable_events and self._event_bus:
+            await (
+                self._event_bus.drain()
+            )  # Flushes any pending background telemetry tasks
 
     async def __aenter__(self) -> "ContextManager":
         await self.start()

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Callable, Awaitable, Optional, TypeVar
+from typing import Dict, List, Callable, Awaitable, Optional, TypeVar, Set
 
 from .types import SawtoothEvent
 
@@ -15,17 +15,15 @@ T = TypeVar("T")
 
 class EventBus:
     """
-    Minimal async event bus.
-
-    - No background worker: handlers are called immediately in the emitter's context
-      (but we shield from errors and allow asyncio.gather)
-    - Backpressure: callers can choose to fire-and-forget or await all handlers
-    - Pluggable: subscribe/unsubscribe by event type
+    Minimal async event bus protected against Python 3.11+ Garbage Collection.
     """
 
     def __init__(self):
         self._handlers: Dict[str, List[EventHandler]] = {}
         self._global_handlers: List[EventHandler] = []
+
+        # GC Shield: Strong references for fire-and-forget background tasks
+        self._background_tasks: Set[asyncio.Task] = set()
 
     def subscribe(self, event_type: str, handler: EventHandler) -> None:
         """Subscribe to a specific event type."""
@@ -45,14 +43,8 @@ class EventBus:
 
     async def emit(self, event: SawtoothEvent, fire_and_forget: bool = True) -> None:
         """
-        Emit an event.
-
-        Args:
-            event: The event to emit
-            fire_and_forget: If True, run handlers in background tasks (non-blocking).
-                             If False, wait for all handlers to complete.
+        Emit an event from an async context.
         """
-        # Get all relevant handlers
         handlers = self._global_handlers.copy()
         if event.event_type in self._handlers:
             handlers.extend(self._handlers[event.event_type])
@@ -61,13 +53,27 @@ class EventBus:
             return
 
         if fire_and_forget:
-            # Fire and forget – no backpressure, but errors are logged
             for handler in handlers:
-                asyncio.create_task(self._safe_call(handler, event))
+                task = asyncio.create_task(self._safe_call(handler, event))
+                # Protect the task from garbage collection
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
         else:
-            # Wait for all handlers with timeout to avoid blocking forever
             tasks = [self._safe_call(handler, event) for handler in handlers]
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def emit_nowait(self, event: SawtoothEvent) -> None:
+        """
+        Schedule an emit from synchronous code, protected from Python 3.11 GC.
+        """
+        task = asyncio.create_task(self.emit(event, fire_and_forget=True))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def drain(self) -> None:
+        """Wait for all in-flight background tasks to complete."""
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
     async def _safe_call(self, handler: EventHandler, event: SawtoothEvent) -> None:
         """Call handler and log errors without crashing."""
