@@ -47,6 +47,42 @@ from .journal import AsyncCompressionJournal
 logger = logging.getLogger(__name__)
 
 
+def _extract_entity_event(record: dict) -> tuple:
+    """Extract (entity_key, operation, timestamp) safely from nested OOP JSON records."""
+    _ENTITY_CHANNEL = "l1_5.entity_anchored"
+
+    # v2 - fields nested under "payload" FIRST
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        event_type = str(record.get("event_type", "")).lower()
+        if "entity_key" in payload or "entity_anchor" in event_type:
+            return (
+                payload.get("entity_key"),
+                payload.get("operation", "unknown"),
+                payload.get("timestamp", record.get("timestamp", "unknown")),
+            )
+
+    # v3 - fields nested under "data" SECOND
+    data = record.get("data")
+    if isinstance(data, dict):
+        if record.get("channel") == _ENTITY_CHANNEL or "entity_key" in data:
+            return (
+                data.get("entity_key"),
+                data.get("operation", "unknown"),
+                data.get("timestamp", record.get("timestamp", "unknown")),
+            )
+
+    # v1 - fields live at the record root LAST
+    if record.get("channel") == _ENTITY_CHANNEL or "entity_key" in record:
+        return (
+            record.get("entity_key"),
+            record.get("operation", "unknown"),
+            record.get("timestamp", "unknown"),
+        )
+
+    return (None, "unknown", "unknown")
+
+
 class ContextManager:
     def __init__(
         self,
@@ -72,9 +108,32 @@ class ContextManager:
 
             from .events.handlers import make_journal_handler
 
-            # Assign to a variable first so Ruff doesn't wrap the line
+            # 1. Bind the strict Compression Journal handler
             handler = make_journal_handler(self._journal)
             self._event_bus.subscribe("compression.cycle_complete", handler)  # type: ignore[arg-type]
+
+            # 2. Bind a dedicated, lightweight handler for Entity Anchoring events
+            # This safely writes the OOP schema to the JSONL file without crashing on strict dataclass fields.
+            import aiofiles
+            import json
+
+            async def entity_journal_handler(event: EntityAnchoredEvent) -> None:
+                record = {
+                    "event_type": "entity_anchored",
+                    "payload": {
+                        "entity_key": event.entity_key,
+                        "entity_value": event.entity_value,
+                        "operation": event.operation,
+                    },
+                    "timestamp": event.timestamp.isoformat(),
+                }
+                try:
+                    async with aiofiles.open(j_path, "a", encoding="utf-8") as f:
+                        await f.write(json.dumps(record) + "\n")
+                except Exception as e:
+                    logger.error(f"Failed to write entity event to journal: {e}")
+
+            self._event_bus.subscribe("l1_5.entity_anchored", entity_journal_handler)  # type: ignore[arg-type]
 
         # 2. Token monitor now receives the initialized event_bus
         self._monitor = TokenMonitor(
@@ -234,6 +293,76 @@ class ContextManager:
             messages.append(msg.to_openai_dict())
 
         return messages
+
+    def explain_prompt(self) -> dict:
+        """
+        Deliverable 2.3: Recall Explainability Traces
+        Returns a structured developer audit trail explaining exactly why
+        specific elements (like L1.5 entities) are present in the active prompt.
+        """
+        import json
+
+        trace: dict = {
+            "l0_system": {
+                "content": self._state.l0_system.content,
+                "origin": "Hardcoded System Initialization",
+            },
+            "l2_archival": {
+                "content": self._state.l2_archival.narrative,
+                "origin": "Background Ollama Compression (L1 -> L2)",
+            },
+            "l1_5_entities": [],
+            "l1_working_messages": len(self._state.l1_working.messages),
+        }
+
+        # 1. Rebuild the historical lineage from the JSONL journal safely
+        journal_history: dict = {}
+
+        # Use getattr to safely resolve the path without triggering linter warnings
+        journal_path = getattr(self, "_journal_path", None)
+        if journal_path is None and getattr(self, "_journal", None) is not None:
+            journal_path = getattr(
+                self._journal, "path", getattr(self._journal, "_path", None)
+            )
+
+        if journal_path and Path(journal_path).exists():
+            with open(Path(journal_path), "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                        # FIX (Bug 2): The OOP telemetry refactor may serialize
+                        # EntityAnchoredEvent fields under a nested "payload" or
+                        # "data" envelope rather than at the root level.  Use a
+                        # schema-agnostic extractor that probes all known variants
+                        # so the parser never silently falls back to "unknown".
+                        key, operation, timestamp = _extract_entity_event(record)
+                        if key:
+                            journal_history[key] = {
+                                "operation": operation,
+                                "timestamp": timestamp,
+                            }
+                    except json.JSONDecodeError:
+                        continue
+
+        # 2. Map the active L1.5 ledger against the historical lineage
+        for key, value in self._state.l1_5_entities.entities.items():
+            history = journal_history.get(
+                key, {"operation": "unknown", "timestamp": "unknown"}
+            )
+            trace["l1_5_entities"].append(
+                {
+                    "prompt_component": "[ENTITY_LEDGER_L1_5]",
+                    "entity_key": key,
+                    "entity_value": value,
+                    "origin": f"Anchored via L1.5 explicit '{history['operation']}'",
+                    "timestamp": history["timestamp"],
+                    "confidence": "100% (Deterministic)",
+                }
+            )
+
+        return trace
 
     # ------------------------------------------------------------------
     # Internal compression triggers
