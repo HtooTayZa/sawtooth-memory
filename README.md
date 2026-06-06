@@ -1,3 +1,4 @@
+
 # Sawtooth Memory
 
 [![Automated Test Suite](https://github.com/HtooTayZa/sawtooth-memory/actions/workflows/test.yaml/badge.svg)](https://github.com/HtooTayZa/sawtooth-memory/actions/workflows/test.yaml)
@@ -5,23 +6,46 @@
 [![Python Support](https://img.shields.io/pypi/pyversions/sawtooth-memory.svg)](https://pypi.org/project/sawtooth-memory/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Async hierarchical memory middleware for LLM agents that mitigates "Lost in the Middle" effects via local or cloud-based context compression.
+**A high-performance, non-blocking hierarchical memory framework for LLM Agents.**
 
-Sawtooth Memory prevents context-window degradation by continuously compressing older conversation state into structured long-term memory — without blocking the main agent execution loop.
+## The Problem
+Standard LLM memory systems (like LangChain's `ConversationSummaryMemory`) process conversation history sequentially on the main application thread. Every time a user sends a message, the entire application freezes while the system waits for an LLM to generate a new historical summary. Furthermore, these summaries suffer from the "Lost in the Middle" hallucination effect, frequently deleting specific UUIDs, names, or rules to save tokens.
 
-Instead of storing entire conversations indefinitely or relying purely on retrieval, Sawtooth maintains a layered memory model:
+## The Solution
+**Sawtooth Memory** eliminates this latency and data loss. It immediately stores the user's message and returns control to the application in milliseconds, offloading the heavy summarization to an asynchronous background worker. To prevent hallucinations, it extracts critical facts into an immutable ledger before summarizing.
 
-- Recent messages remain verbatim
-- Important operational entities persist exactly
-- Older context compresses into narrative state summaries
-- Compression runs fully asynchronously in the background
+---
 
-The result is bounded prompt growth with stable long-session behavior.
+## Architecture & Data Flow
+
+### 1. The Non-Blocking Execution Model
 
 ```text
-agent loop
-    │
-    ▼
+  Standard Memory (Blocking)            Sawtooth Memory (Async)
+  ──────────────────────────            ───────────────────────
+
+  [ Application ]                       [ Application ]
+         │                                     │
+         ▼                                     ▼
+  [ Save Context ]                      [ ContextManager ]
+         │                                     │
+         ▼                                     ├───────────────────┐ (Instant Return)
+  [ LLM Summarizes ]                           ▼                   ▼
+  (App freezes for 5-10s)               [ Next User Turn ]  [ Background Worker ]
+         │                                                         │
+         ▼                                                         ▼
+  [ Next User Turn ]                                        [ LLM Summarizes ]
+
+```
+
+### 2. The Hierarchical Memory Stack
+
+When your agent is ready to respond, Sawtooth stitches together an optimized context payload from distinct layers, ensuring critical facts are never summarized away.
+
+```text
+    Agent Loop
+        │
+        ▼
 ┌─────────────────────┐
 │   ContextManager    │
 │  ┌───────────────┐  │
@@ -40,336 +64,156 @@ agent loop
 
 ```
 
-The name "Sawtooth" comes from the token usage pattern created by periodic compression cycles.
+---
+
+## Performance Benchmarks
+
+By moving compression to the background, Sawtooth achieves massive latency reductions on the main thread while maintaining 100% recall accuracy.
+
+**Local GPU Benchmark (NVIDIA RTX 5060 | Model: phi4-mini | 20-Message Conversation)**
+
+| Performance Metric | Standard Summary Memory | Sawtooth Hierarchical | Architectural Advantage |
+| --- | --- | --- | --- |
+| **Main Thread Latency** | 64.15 seconds | **5.70 seconds** | **11.3x Faster Execution** |
+| **Final Prompt Payload** | 506 tokens | **454 tokens** | **10% Lower Token Cost** |
+| **UUID / Fact Recall** | Variable / Hallucinates | **100% Retained** | **Guaranteed via L1.5 Ledger** |
+
+For full methodology, cloud comparisons, and reproducibility steps, view our [Comprehensive Benchmarks](https://www.google.com/search?q=BENCHMARKS.md).
 
 ---
 
-## Why This Exists
-
-Long-running agents eventually fail for predictable reasons:
-
-- Context windows fill up with stale history
-- Critical execution anchors get buried and ignored
-- Naive summarization drops exact identifier strings
-- RAG systems lose conversational flow continuity
-- Synchronous context compression blocks or lags the main loop
-
-Most memory systems optimize for either pure storage or external retrieval. Sawtooth optimizes for **prompt survivability**. It continuously reshapes conversation history into a compact working context while preserving exact operational state separately.
-
----
-
-## Core Design
-
-Sawtooth uses four structured memory tiers:
-
-| Layer | Purpose        | Characteristics               |
-| ----- | -------------- | ----------------------------- |
-| L0    | System memory  | Immutable instruction layers  |
-| L1    | Working memory | Recent verbatim messages      |
-| L1.5  | Entity ledger  | Exact structured state anchor |
-| L2    | Archive memory | Compressed narrative history  |
-
-### L0 — System Memory
-
-Contains system prompts, tool schemas, agent roles, and static rules. L0 remains immutable throughout the session.
-
-### L1 — Working Memory
-
-A sliding window of recent raw conversation turns representing the active reasoning surface. When usage crosses `soft_limit_tokens`, older terms are queued for background processing.
-
-### L1.5 — Entity Ledger
-
-Structured exact-value persistence. Because summarization is lossy, critical identifiers like UUIDs, database transaction keys, connection endpoints, and absolute file paths must remain exact. L1.5 preserves these elements in a clean structured schema to prevent them from disappearing into text narrative summaries.
-
-### L2 — Archive Memory
-
-An append-only, compressed long-horizon narrative history recording historical actions and agent outcomes. It is optimized for semantic continuity rather than verbatim replay.
-
----
-
-# How Compression Works
-
-Compression is fully asynchronous. The main agent loop never blocks waiting for a summarization API response.
-
-When L1 exceeds the configured soft limit:
-
-1. The oldest messages are sliced off into discrete chunks.
-2. Chunk collections are offloaded onto a background `asyncio` worker queue.
-3. Chat clutter is pruned and evaluated.
-4. Cleaned components are compressed using your configured model.
-5. Extracted text insights are merged cleanly back into the L2 Archive and L1.5 Entity Ledger.
-6. The original raw messages are safely cleared from L1.
-
-This produces a predictable, repeating "sawtooth" token profile instead of monotonic prompt growth.
-
----
-
-# Design Features
-
-- **Bounded Prompt Growth:** Keeps input payloads stable across lengthy multi-turn sessions.
-- **Non-Blocking Execution:** Worker processing occurs off the primary execution timeline.
-- **Failure Isolation:** Background summary errors never interrupt or crash your agent loop.
-- **Framework Agnostic:** Generates standard message arrays compatible with any OpenAI-style client.
-- **Local-First Capabilities:** Context reduction tasks can run 100% locally on an Ollama instance.
-
----
-
-# Installation
-
-Install the core package from PyPI:
+## Installation
 
 ```bash
 pip install sawtooth-memory
 
 ```
 
-To include optional LangGraph integration dependencies:
+*Optional dependencies for cloud providers:*
 
 ```bash
-pip install "sawtooth-memory[langgraph]"
-
-```
-
-To install from source for local development:
-
-```bash
-git clone [https://github.com/HtooTayZa/sawtooth-memory](https://github.com/HtooTayZa/sawtooth-memory)
-cd sawtooth-memory
-pip install -e ".[dev,langgraph]"
-
-```
-
-### Runtime Requirements
-
-- Python >= 3.11
-- Either a local Ollama service running or accessible cloud backend API keys (OpenAI, Anthropic, Gemini).
-
-```bash
-ollama serve
-ollama pull phi4
+pip install langchain-openai langchain-anthropic langchain-google-genai
 
 ```
 
 ---
 
-# Examples
+## Quickstart
 
-You can find complete, runnable implementations inside the [`/examples`](https://www.google.com/search?q=https://github.com/HtooTayZa/sawtooth-memory/tree/main/examples) directory of the repository:
+### 1. The Standard Agent Loop
 
-- `basic_agent.py` — Demonstrates standalone `ContextManager` message ingestion and memory state telemetry.
-- `langgraph_integration.py` — Details how to wire up the `SawtoothLangGraphAdapter` seamlessly inside custom graph nodes.
-
----
-
-# Quick Start
+Initialize the `ContextManager` and let the background worker handle the heavy lifting. Sawtooth is universally compatible with local air-gapped models (Ollama) and cloud APIs.
 
 ```python
 import asyncio
 from sawtooth_memory import ContextManager, ContextManagerConfig
-
-config = ContextManagerConfig(
-    soft_limit_tokens=3000,
-    hard_limit_tokens=6000,
-    chunk_size=10,
-)
+from sawtooth_memory.config import OllamaConfig
 
 async def main():
-    async with ContextManager(
-        system_prompt="You are a data analysis assistant.",
-        config=config,
-    ) as memory:
+    config = ContextManagerConfig(
+        soft_limit_tokens=1000,
+        hard_limit_tokens=2000,
+        ollama=OllamaConfig(base_url="http://localhost:11434", model="phi4")
+    )
 
-        await memory.add_message("user", "Analyze Q3 revenue trends.")
-        await memory.add_message("assistant", "Connecting to PostgreSQL database.")
-        await memory.add_message("tool", '{"connection_id": "conn_994a82"}')
+    async with ContextManager(system_prompt="You are a helpful assistant.", config=config) as cm:
 
-        # Retrieve the fully compiled, optimized message context
-        messages = memory.build_prompt()
+        # 1. Instantly ingest messages (Main thread is never blocked)
+        await cm.add_message("user", "My transaction ID is txn_998877_alpha")
+        await cm.add_message("assistant", "I have noted your transaction ID.")
 
-        # Pass the formatted array directly to your LLM framework client
-        # response = await client.chat.completions.create(
-        #     model="gpt-4o",
-        #     messages=messages,
-        # )
-
-        print(memory.get_stats())
+        # 2. Build the optimized prompt to send to your main LLM
+        prompt = cm.build_prompt()
+        print(prompt)
 
 if __name__ == "__main__":
     asyncio.run(main())
 
 ```
 
----
+### 2. Recall Explainability Traces
 
-# Compiled Prompt Structure
+Sawtooth eliminates the "black-box" of agent memory by providing deterministic audit trails. You can query the memory system to see exactly why a fact was retained in the prompt.
 
-`build_prompt()` returns standard OpenAI-format messages. The compound system context prompt is assembled dynamically matching this layout:
+```python
+trace = cm.explain_prompt()
 
-```text
-[SYSTEM_L0]
-You are a data analysis assistant.
+import json
+print(json.dumps(trace, indent=2))
 
-[ARCHIVE_L2]
-User requested Q3 analysis. Connected to PostgreSQL.
-Detected revenue anomalies across enterprise channels.
+```
 
-[ENTITY_LEDGER_L1_5]
+**Output:**
+
+```json
 {
-  "connection_id": "conn_994a82",
-  "dataset": "sales_q3_2026"
+  "system_prompt": "You are a helpful assistant.",
+  "l2_summary_lineage": [
+    "User initiated troubleshooting for router.",
+    "User provided MAC address."
+  ],
+  "l1_5_entities": [
+    {
+      "key": "user_transaction_id",
+      "value": "txn_998877_alpha",
+      "origin": "Anchored via L1.5 explicit instruction"
+    }
+  ],
+  "l1_active_messages": 4,
+  "total_tokens": 342
 }
 
 ```
 
-Recent active conversation sequences follow directly underneath as raw, uncompressed verbatim turns.
+### 3. Integrations: LangGraph
 
----
-
-# Configuration
-
-Sawtooth Memory uses Pydantic configurations. You can back your background compilation loops using either local inference or public cloud engines.
-
-### Local Backend Configuration (Ollama)
+Sawtooth provides a native `SawtoothMemorySaver` adapter, acting as a drop-in checkpointer replacement for LangGraph architectures.
 
 ```python
-from sawtooth_memory import ContextManagerConfig, OllamaConfig
+from langgraph.graph import StateGraph
+from sawtooth_memory.integrations.langgraph import SawtoothMemorySaver
 
-config = ContextManagerConfig(
-    soft_limit_tokens=3000,
-    hard_limit_tokens=6000,
-    chunk_size=10,
-    tokenizer_model="gpt-4o",
-    fallback_truncate=True,
-    ollama=OllamaConfig(
-        base_url="http://localhost:11434",
-        model="phi4",
-        timeout_seconds=90,
-    ),
-)
+graph_builder = StateGraph(State)
+# ... add nodes and edges ...
 
-```
-
-### Cloud Backend Configuration (OpenAI, Anthropic, Gemini)
-
-```python
-from sawtooth_memory import ContextManagerConfig
-from sawtooth_memory.config import CloudConfig, Provider
-
-config = ContextManagerConfig(
-    soft_limit_tokens=3000,
-    hard_limit_tokens=6000,
-    chunk_size=10,
-    fallback_truncate=True,
-    cloud=CloudConfig(
-        provider=Provider.ANTHROPIC,
-        model="claude-3-5-haiku-latest",
-        api_key="your-api-key-here",
-        timeout_seconds=60,
-        base_url=None,
-    ),
-)
-
-```
-
-### Core Configuration Fields
-
-| Parameter           | Type           | Default    | Description                                                                                      |
-| ------------------- | -------------- | ---------- | ------------------------------------------------------------------------------------------------ |
-| `soft_limit_tokens` | `int`          | `3000`     | The token baseline that triggers asynchronous background compression tasks.                      |
-| `hard_limit_tokens` | `int`          | `6000`     | The absolute safety limit for window sizing before strict processing takes effect.               |
-| `chunk_size`        | `int`          | `10`       | The specific amount of early raw chat messages sliced off into each compression payload.         |
-| `tokenizer_model`   | `str`          | `"gpt-4o"` | The underlying tokenizer schema encoding rule used for tracking lookups.                         |
-| `fallback_truncate` | `bool`         | `True`     | Flags if the loop should drop elements smoothly if a cloud or local summarizer fails completely. |
-| `ollama`            | `OllamaConfig` | _Factory_  | Configuration parameters defining the target local Ollama endpoint environment.                  |
-| `cloud`             | `CloudConfig`  | `None`     | Endpoint authentication, provider types, and configuration metadata targeting cloud APIs.        |
-
----
-
-# Comparison Matrix
-
-| Framework Memory Variant      | Reduction Strategy                    | Structural Compression | Exact Identity Tracker | Asynchronous Non-Blocking |
-| ----------------------------- | ------------------------------------- | ---------------------- | ---------------------- | ------------------------- |
-| **ConversationSummaryMemory** | Rolling basic text summary            | Yes                    | No                     | No                        |
-| **Mem0**                      | Memory item graph retrieval           | Partial                | No                     | Partial                   |
-| **MemPalace**                 | External semantic vector retrieval    | No                     | No                     | No                        |
-| **Sawtooth Memory**           | Tiered hierarchical context reduction | **Yes**                | **Yes**                | **Yes**                   |
-
----
-
-# Roadmap
-
-- [x] LangGraph framework adapter
-- [ ] AutoGen framework integration adapter
-- [ ] Redis-backed multi-process background worker transport
-- [ ] Adaptive semantic salience metric scoring
-- [ ] Recursive background archive layer compression
-- [ ] Hybrid memory/vector RAG indexing
-- [ ] Prometheus telemetry monitoring hooks
-- [ ] Native TypeScript/Node framework package port
-
----
-
-# Repository Structure
-
-```text
-sawtooth-memory/
-├── .github/
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug-report.yml          # Structured bug report input form
-│   │   └── feature-request.yml     # Structured feature request input form
-│   └── workflows/
-│       └── test.yaml               # CI test pipeline
-│
-├── sawtooth_memory/
-│   ├── integrations/
-│   │   └── langgraph/
-│   │       ├── adapter.py          # LangGraph adapter layer
-│   │       └── graph.py            # Graph state definitions
-│   │
-│   ├── providers/
-│   │   ├── __init__.py
-│   │   ├── adapters.py             # Internal LLM provider adapters
-│   │   └── factory.py              # LLM client builder factory
-│   │
-│   ├── compressor.py               # Core compression/summarization logic
-│   ├── config.py                   # Configuration validation schemas
-│   ├── exceptions.py               # Package exceptions
-│   ├── middleware.py               # Context middleware entrypoint
-│   ├── monitor.py                  # Telemetry and token tracking metrics
-│   ├── state.py                    # Multi-tier state representation
-│   └── worker.py                   # Async background background loop
-│
-├── tests/
-│   ├── conftest.py
-│   ├── test_adapter.py
-│   ├── test_cloud_compressor.py
-│   ├── test_compressor.py
-│   ├── test_graph.py
-│   ├── test_middleware.py
-│   ├── test_monitor.py
-│   └── test_state.py
-│
-├── examples/
-│   ├── basic_agent.py              # Basic standalone workflow snippet
-│   └── langgraph_integration.py     # Simple LangGraph workflow snippet
-│
-├── .gitignore
-├── .pre-commit-config.yaml
-├── CODE_OF_CONDUCT.md
-├── CONTRIBUTING.md
-├── LICENSE
-├── pyproject.toml
-├── README.md
-└── SECURITY.md
+memory_saver = SawtoothMemorySaver(cm)
+graph = graph_builder.compile(checkpointer=memory_saver)
 
 ```
 
 ---
 
-# License
+## Roadmap
 
-MIT License — see [`LICENSE`](https://www.google.com/search?q=LICENSE) for implementation conditions.
+* [x] **Phase 1: Core Architecture**
+* [x] L1/L2 Hierarchical Buffer
+* [x] Asynchronous Background Worker
+* [x] Local (Ollama) & Cloud compatibility
 
-```
 
-```
+* [x] **Phase 2: Observability & Telemetry**
+* [x] EventBus Subsystem
+* [x] Explainability Traces
+* [x] Persistent JSONL Auditing Journal
+* [x] Performance Benchmarking Harness
+
+
+* [ ] **Phase 3: Advanced Architectures (Up Next)**
+* [ ] Multi-Agent Memory Pooling (Shared contextual state)
+* [ ] Semantic Vector L3 Archival Memory (RAG integration)
+* [ ] Redis/Postgres Adapter for Distributed Deployments
+
+
+
+---
+
+## Contributing
+
+We welcome pull requests. See our [CONTRIBUTING.md](https://www.google.com/search?q=CONTRIBUTING.md) for guidelines on how to run the test suite and ensure code quality.
+
+---
+## License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+
+---
