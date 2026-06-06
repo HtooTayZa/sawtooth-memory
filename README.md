@@ -15,6 +15,13 @@ Standard LLM memory systems (like LangChain's `ConversationSummaryMemory`) proce
 **Sawtooth Memory** eliminates this latency and data loss. It immediately stores the user's message and returns control to the application in milliseconds, offloading the heavy summarization to an asynchronous background worker. To prevent hallucinations, it extracts critical facts into an immutable ledger before summarizing.
 
 ---
+## Documentation
+
+For deep architectural deep-dives, comprehensive API specifications, and advanced lifecycle configurations, please refer to the official documentation:
+
+[View Detailed Architecture & API Reference (DOCUMENTATION.md)](DOCUMENTATION.md)
+
+---
 
 ## Architecture & Data Flow
 
