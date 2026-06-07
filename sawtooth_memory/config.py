@@ -32,7 +32,7 @@ class OllamaConfig(BaseModel):
     """Connection settings for the local Ollama compression backend."""
 
     base_url: str = "http://localhost:11434"
-    model: str = "phi4"
+    model: str = "phi4-mini:latest"
     timeout_seconds: int = 90
 
 
@@ -69,13 +69,38 @@ class CloudConfig(BaseModel):
 
 
 class ContextManagerConfig(BaseModel):
-    """Top-level configuration for the ContextManager middleware."""
+    soft_limit_tokens: int = Field(
+        default=1000,
+        description="Trigger compression when L1 tokens exceed this soft limit.",
+    )
+    hard_limit_tokens: int = Field(
+        default=2500,
+        description="Failsafe limit to hard-truncate older L1 messages if compression is too slow.",
+    )
+    chunk_size: int = Field(
+        default=4,
+        description="Number of oldest L1 messages to summarize and evict per compression cycle.",
+    )
 
-    soft_limit_tokens: int = 3000
-    hard_limit_tokens: int = 6000
-    chunk_size: int = 10
-    tokenizer_model: str = "gpt-4o"
-    fallback_truncate: bool = True
+    fallback_truncate: bool = Field(
+        default=True,
+        description="Whether to aggressively discard messages if hard_limit is reached.",
+    )
 
-    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    # NEW: Turn-based batching
+    max_unsummarized_turns: Optional[int] = Field(
+        default=None,
+        description="Trigger compression if unsummarized L1 messages reach this count, acting as a turn-based batching threshold.",
+    )
+
+    tokenizer_model: str = Field(
+        default="gpt-4o",
+        description="Tokenizer encoding to use for precise context monitoring.",
+    )
+    journal_path: str = Field(
+        default=".sawtooth_journal.jsonl",
+        description="Path to the JSONL auditing journal.",
+    )
+
+    ollama: Optional[OllamaConfig] = None
     cloud: Optional[CloudConfig] = None

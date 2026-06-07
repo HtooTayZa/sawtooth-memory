@@ -140,6 +140,10 @@ class ContextManager:
             model=self._config.tokenizer_model,
             soft_limit=self._config.soft_limit_tokens,
             hard_limit=self._config.hard_limit_tokens,
+            # NEW: pass the batching threshold if it exists in the config
+            max_unsummarized_turns=getattr(
+                self._config, "max_unsummarized_turns", None
+            ),
             event_bus=self._event_bus,
         )
 
@@ -165,12 +169,22 @@ class ContextManager:
 
             self._state.l1_5_entities.set_event_callback(handle_ledger_mutation)
 
-        # 4. Compression backend & Worker
-        self._compressor: CloudCompressor | OllamaCompressor
-        if self._config.cloud:
-            self._compressor = CloudCompressor(self._config.cloud)
-        else:
-            self._compressor = OllamaCompressor(self._config.ollama)
+            # 4. Compression backend & Worker
+            self._compressor: CloudCompressor | OllamaCompressor
+            if self._config.cloud:
+                self._compressor = CloudCompressor(self._config.cloud)
+            else:
+                # Import here locally to satisfy default fallback instantiation
+                from .config import OllamaConfig
+
+                # If no ollama config was provided in the parent config, create the default one now
+                ollama_cfg = (
+                    self._config.ollama
+                    if self._config.ollama is not None
+                    else OllamaConfig()
+                )
+
+                self._compressor = OllamaCompressor(ollama_cfg)
 
         self._worker = CompressionWorker(
             compressor=self._compressor,
@@ -249,8 +263,8 @@ class ContextManager:
             )
             self._force_truncate()
 
-        # Soft limit check → trigger async compression
-        elif self._monitor.exceeds_soft_limit(self._state):
+        # Soft limit & Turn count batching check (Debounced) → trigger async compression
+        elif self._monitor.should_trigger_compression(self._state):
             await self._trigger_compression()
 
     def build_prompt(self) -> list[dict[str, str]]:

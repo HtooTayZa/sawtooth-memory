@@ -99,3 +99,24 @@ def test_extract_entity_event_unknown_schema():
     assert key is None
     assert op == "unknown"
     assert ts == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_explain_prompt_structure():
+    """Verify that explain_prompt returns the correct schema."""
+    config = ContextManagerConfig(soft_limit_tokens=1000)
+
+    async with ContextManager(system_prompt="You are an AI.", config=config) as cm:
+        cm.state.l2_archival.append_narrative("Old summary")
+        # CHANGED: 'set' to 'upsert'
+        cm.state.l1_5_entities.upsert({"user_id": "12345"})
+        trace = cm.explain_prompt()
+
+        assert "l0_system" in trace
+        assert trace["l0_system"]["content"] == "You are an AI."
+        assert "l2_archival" in trace
+        assert trace["l2_archival"]["content"] == "Old summary"
+        assert "l1_5_entities" in trace
+        assert len(trace["l1_5_entities"]) == 1
+        assert trace["l1_5_entities"][0]["entity_key"] == "user_id"
+        assert trace["l1_5_entities"][0]["entity_value"] == ["12345"]

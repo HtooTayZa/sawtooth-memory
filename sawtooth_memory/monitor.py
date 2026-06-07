@@ -5,7 +5,8 @@ Uses tiktoken to count tokens locally (no API call required) before
 deciding whether to trigger background compression.
 
 Phase 2 enhancement: Optionally emits SoftLimitReachedEvent and HardLimitReachedEvent
-when the respective thresholds are crossed for the first time.
+when the respective thresholds are crossed for the first time. Adds Debouncing and
+Turn-based Batching to prevent background queue flooding.
 """
 
 from __future__ import annotations
@@ -21,16 +22,25 @@ from .state import MemoryState, Message
 # Import event types and bus (use TYPE_CHECKING to avoid circular imports)
 if TYPE_CHECKING:
     from .events.bus import EventBus
-    from .events.types import SoftLimitReachedEvent, HardLimitReachedEvent
+    from .events.types import (
+        SoftLimitReachedEvent,
+        HardLimitReachedEvent,
+        SawtoothEvent,
+    )
 else:
     try:
         from .events.bus import EventBus
-        from .events.types import SoftLimitReachedEvent, HardLimitReachedEvent
+        from .events.types import (
+            SoftLimitReachedEvent,
+            HardLimitReachedEvent,
+            SawtoothEvent,
+        )
     except ImportError:
         # Fallback: define dummy types when event system is not installed
         EventBus = None  # type: ignore
         SoftLimitReachedEvent = None  # type: ignore
         HardLimitReachedEvent = None  # type: ignore
+        SawtoothEvent = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +52,8 @@ class TokenMonitor:
     Counts tokens using a local tiktoken encoder and detects when
     Working Memory (L1) has crossed the soft compression threshold.
 
-    If an event bus is provided, it emits SoftLimitReachedEvent and
-    HardLimitReachedEvent when thresholds are crossed (once per crossing
-    direction).
+    Includes Batching & Debouncing logic to ensure compression is only
+    triggered when necessary and never floods the background worker.
     """
 
     def __init__(
@@ -52,15 +61,20 @@ class TokenMonitor:
         model: str = "gpt-4o",
         soft_limit: int = 3000,
         hard_limit: int = 6000,
-        event_bus: Optional["EventBus"] = None,  # forward reference
+        max_unsummarized_turns: Optional[int] = None,  # NEW: Batching config
+        event_bus: Optional["EventBus"] = None,
     ) -> None:
         self.soft_limit = soft_limit
         self.hard_limit = hard_limit
+        self.max_unsummarized_turns = max_unsummarized_turns
         self.event_bus = event_bus
 
         # Internal flags to avoid repeated events while already over the limit
         self._soft_exceeded = False
         self._hard_exceeded = False
+
+        # NEW: Debounce lock to prevent queuing multiple compression tasks
+        self._is_compression_queued = False
 
         self._enc = None
         try:
@@ -81,8 +95,56 @@ class TokenMonitor:
                 "Falling back to word-count approximation (~1.3 words/token)."
             )
 
+        # NEW: Subscribe to event bus to reset debounce locks automatically
+        if self.event_bus is not None:
+            self.event_bus.subscribe(
+                "compression.cycle_complete", self._on_compression_done
+            )  # type: ignore[arg-type]
+            self.event_bus.subscribe(
+                "compression.cycle_failed", self._on_compression_done
+            )  # type: ignore[arg-type]
+
     # ------------------------------------------------------------------
-    # Core counting
+    # Batching & Debouncing Logic (NEW)
+    # ------------------------------------------------------------------
+
+    async def _on_compression_done(self, event: "SawtoothEvent") -> None:
+        """Reset the debounce lock and soft limit flag after compression completes."""
+        self._is_compression_queued = False
+        self._soft_exceeded = (
+            False  # Reset so the telemetry event can fire again next cycle
+        )
+        logger.debug("TokenMonitor: Compression finished. Lock released.")
+
+    def should_trigger_compression(self, state: MemoryState) -> bool:
+        """
+        Master evaluation function for middleware.
+        Checks both token limits and turn limits, respecting the debounce lock.
+        """
+        # If the worker is already busy compressing, don't spam the queue
+        if self._is_compression_queued:
+            return False
+
+        needs_compression = False
+
+        # Rule 1: Check Token Limit (This inherently fires the SoftLimitReachedEvent if crossed)
+        if self.exceeds_soft_limit(state):
+            needs_compression = True
+
+        # Rule 2: Check Turn Limit (Batching)
+        if self.max_unsummarized_turns is not None:
+            if len(state.l1_working.messages) >= self.max_unsummarized_turns:
+                needs_compression = True
+
+        # If either condition is met, lock the debouncer and return True
+        if needs_compression:
+            self._is_compression_queued = True
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # Core counting (UNCHANGED)
     # ------------------------------------------------------------------
 
     def count_text(self, text: str) -> int:
@@ -96,7 +158,7 @@ class TokenMonitor:
         return self.count_text(message.content) + _MESSAGE_OVERHEAD
 
     # ------------------------------------------------------------------
-    # Threshold checks (with optional event emission)
+    # Threshold checks (with optional event emission) (UNCHANGED)
     # ------------------------------------------------------------------
 
     def exceeds_soft_limit(self, state: MemoryState) -> bool:
@@ -124,7 +186,7 @@ class TokenMonitor:
         return exceeded
 
     # ------------------------------------------------------------------
-    # Event emission helpers
+    # Event emission helpers (UNCHANGED)
     # ------------------------------------------------------------------
 
     def _emit_soft_limit_reached(self, current_tokens: int) -> None:
@@ -152,7 +214,7 @@ class TokenMonitor:
         logger.warning(f"Hard limit reached: {current_tokens}/{self.hard_limit} tokens")
 
     # ------------------------------------------------------------------
-    # State helpers
+    # State helpers (UNCHANGED)
     # ------------------------------------------------------------------
 
     def recount_working_memory(self, state: MemoryState) -> None:
