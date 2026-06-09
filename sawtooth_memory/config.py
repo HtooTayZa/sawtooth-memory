@@ -7,8 +7,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, SecretStr
-
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 # ---------------------------------------------------------------------------
 # Provider enum
@@ -81,16 +80,19 @@ class ContextManagerConfig(BaseModel):
         default=4,
         description="Number of oldest L1 messages to summarize and evict per compression cycle.",
     )
-
     fallback_truncate: bool = Field(
         default=True,
         description="Whether to aggressively discard messages if hard_limit is reached.",
     )
-
-    # NEW: Turn-based batching
     max_unsummarized_turns: Optional[int] = Field(
         default=None,
-        description="Trigger compression if unsummarized L1 messages reach this count, acting as a turn-based batching threshold.",
+        description="Trigger compression if unsummarized L1 messages reach this count.",
+    )
+
+    # NEW: Highly descriptive architectural configuration
+    background_model: Optional[str] = Field(
+        default=None,
+        description="Define a cheaper, faster model (e.g., 'gpt-4o-mini', 'gemini-1.5-flash') purely for background tasks.",
     )
 
     tokenizer_model: str = Field(
@@ -104,3 +106,25 @@ class ContextManagerConfig(BaseModel):
 
     ollama: Optional[OllamaConfig] = None
     cloud: Optional[CloudConfig] = None
+
+    @model_validator(mode="after")
+    def __v2_normalize_dual_model_architecture__(self) -> "ContextManagerConfig":
+        """
+        Architecture Enforcement: Automatically resolves the background model
+        hierarchical override seamlessly during object validation.
+        """
+        if not self.background_model:
+            return self
+
+        # If a cloud provider setup is present, cascade the override down
+        if self.cloud:
+            self.cloud.model = self.background_model
+
+        # If an Ollama configuration block is active, cascade down
+        if self.ollama:
+            self.ollama.model = self.background_model
+        # If neither is defined, initialize a default Ollama config with the target background model
+        elif not self.cloud:
+            self.ollama = OllamaConfig(model=self.background_model)
+
+        return self

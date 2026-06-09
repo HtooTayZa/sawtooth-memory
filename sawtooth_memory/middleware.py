@@ -172,18 +172,17 @@ class ContextManager:
             # 4. Compression backend & Worker
             self._compressor: CloudCompressor | OllamaCompressor
             if self._config.cloud:
+                # No custom logic needed here! The model config is already perfectly updated.
                 self._compressor = CloudCompressor(self._config.cloud)
             else:
-                # Import here locally to satisfy default fallback instantiation
                 from .config import OllamaConfig
 
-                # If no ollama config was provided in the parent config, create the default one now
+                # This cleanly handles both pre-configured or default fallback states
                 ollama_cfg = (
                     self._config.ollama
                     if self._config.ollama is not None
                     else OllamaConfig()
                 )
-
                 self._compressor = OllamaCompressor(ollama_cfg)
 
         self._worker = CompressionWorker(
