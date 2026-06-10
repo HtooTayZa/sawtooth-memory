@@ -123,7 +123,8 @@ class ContextManager:
                     "payload": {
                         "entity_key": event.entity_key,
                         "entity_value": event.entity_value,
-                        "operation": event.operation,
+                        "operation": getattr(event, "operation", "unknown"),
+                        "strategy": getattr(event, "strategy", "deterministic"),
                     },
                     "timestamp": event.timestamp.isoformat(),
                 }
@@ -140,7 +141,7 @@ class ContextManager:
             model=self._config.tokenizer_model,
             soft_limit=self._config.soft_limit_tokens,
             hard_limit=self._config.hard_limit_tokens,
-            # NEW: pass the batching threshold if it exists in the config
+            # pass the batching threshold if it exists in the config
             max_unsummarized_turns=getattr(
                 self._config, "max_unsummarized_turns", None
             ),
@@ -154,6 +155,7 @@ class ContextManager:
             l1_5_entities=EntityLedger(),
             l2_archival=ArchivalMemory(),
         )
+
         # 3. Bind the Entity Ledger telemetry callback
         if self._enable_events and self._event_bus:
 
@@ -161,35 +163,46 @@ class ContextManager:
                 key: str, value: str, op: Literal["insert", "update", "delete"]
             ):
                 if self._event_bus:
+                    from .ner import active_strategy_context
+
+                    strategies = active_strategy_context.get()
+
+                    # If the key isn't explicitly mapped by the worker, it's a manual injection
+                    # from the main thread, which is inherently deterministic.
+                    strategy = strategies.get(key, "deterministic")
+
                     event = EntityAnchoredEvent(
                         entity_key=key, entity_value=value, operation=op
                     )
-                    # Safely emit from this synchronous function
+                    # Dynamically attach strategy without altering strict Pydantic core models
+                    setattr(event, "strategy", strategy)
                     self._event_bus.emit_nowait(event)
 
             self._state.l1_5_entities.set_event_callback(handle_ledger_mutation)
 
-            # 4. Compression backend & Worker
-            self._compressor: CloudCompressor | OllamaCompressor
-            if self._config.cloud:
-                # No custom logic needed here! The model config is already perfectly updated.
-                self._compressor = CloudCompressor(self._config.cloud)
-            else:
-                from .config import OllamaConfig
+        # 4. Compression backend & Worker
+        self._compressor: CloudCompressor | OllamaCompressor
+        if self._config.cloud:
+            # No custom logic needed here! The model config is already perfectly updated.
+            self._compressor = CloudCompressor(self._config.cloud)
+        else:
+            from .config import OllamaConfig
 
-                # This cleanly handles both pre-configured or default fallback states
-                ollama_cfg = (
-                    self._config.ollama
-                    if self._config.ollama is not None
-                    else OllamaConfig()
-                )
-                self._compressor = OllamaCompressor(ollama_cfg)
+            # This cleanly handles both pre-configured or default fallback states
+            ollama_cfg = (
+                self._config.ollama
+                if self._config.ollama is not None
+                else OllamaConfig()
+            )
+            self._compressor = OllamaCompressor(ollama_cfg)
 
         self._worker = CompressionWorker(
             compressor=self._compressor,
             fallback_truncate=self._config.fallback_truncate,
             event_bus=self._event_bus,
             journal=self._journal,
+            enable_deterministic_ner=self._config.enable_deterministic_ner,
+            custom_ner_patterns=self._config.custom_ner_patterns,
         )
 
         logger.debug(
@@ -345,33 +358,50 @@ class ContextManager:
                         continue
                     try:
                         record = json.loads(line)
-                        # FIX (Bug 2): The OOP telemetry refactor may serialize
-                        # EntityAnchoredEvent fields under a nested "payload" or
-                        # "data" envelope rather than at the root level.  Use a
-                        # schema-agnostic extractor that probes all known variants
-                        # so the parser never silently falls back to "unknown".
                         key, operation, timestamp = _extract_entity_event(record)
                         if key:
+                            # Safely extract strategy - fallback to deterministic if field is missing
+                            payload = (
+                                record.get("payload") or record.get("data") or record
+                            )
+                            strategy = (
+                                payload.get("strategy", "deterministic")
+                                if isinstance(payload, dict)
+                                else "deterministic"
+                            )
+
                             journal_history[key] = {
                                 "operation": operation,
                                 "timestamp": timestamp,
+                                "strategy": strategy,
                             }
                     except json.JSONDecodeError:
                         continue
 
         # 2. Map the active L1.5 ledger against the historical lineage
         for key, value in self._state.l1_5_entities.entities.items():
+            # If the entry is missing from the log file (e.g., manual developer injection),
+            # it is inherently 100% deterministic.
             history = journal_history.get(
-                key, {"operation": "unknown", "timestamp": "unknown"}
+                key,
+                {
+                    "operation": "unknown",
+                    "timestamp": "unknown",
+                    "strategy": "deterministic",
+                },
             )
+            strategy = history.get("strategy", "deterministic")
             trace["l1_5_entities"].append(
                 {
                     "prompt_component": "[ENTITY_LEDGER_L1_5]",
                     "entity_key": key,
                     "entity_value": value,
-                    "origin": f"Anchored via L1.5 explicit '{history['operation']}'",
+                    # FIX: Inject the operation back into the origin string so the test catches it
+                    "origin": f"Anchored via explicit tracking engine (Operation: {history['operation']}) [Strategy: {strategy}]",
                     "timestamp": history["timestamp"],
-                    "confidence": "100% (Deterministic)",
+                    "confidence": "100% (Deterministic)"
+                    if strategy == "deterministic"
+                    else "85% (LLM Synthesized)",
                 }
             )
 
@@ -405,7 +435,6 @@ class ContextManager:
                     cycle_id=cycle_id,
                     current_l1_tokens=self._state.l1_working.token_count,
                     chunk_size=self._config.chunk_size,
-                    session_id=None,  # can be extended later
                 )
             )
 
@@ -419,7 +448,6 @@ class ContextManager:
                     tokens_remaining_l1=self._state.l1_working.token_count,
                     evicted_message_ids=[m.id for m in chunk],
                     trigger="soft_limit_exceeded",
-                    session_id=None,
                     cycle_id=cycle_id,  # link to compression cycle
                 )
             )

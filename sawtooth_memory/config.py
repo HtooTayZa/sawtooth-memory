@@ -103,6 +103,14 @@ class ContextManagerConfig(BaseModel):
         default=".sawtooth_journal.jsonl",
         description="Path to the JSONL auditing journal.",
     )
+    enable_deterministic_ner: bool = Field(
+        default=True,
+        description="Enable the fast regex/deterministic NER extraction wave inside the compression worker.",
+    )
+    custom_ner_patterns: dict[str, str] = Field(
+        default_factory=dict,
+        description="User-defined key-to-regex-string mappings that extend or override default tracking.",
+    )
 
     ollama: Optional[OllamaConfig] = None
     cloud: Optional[CloudConfig] = None

@@ -20,11 +20,11 @@ import logging
 from dataclasses import dataclass
 from typing import Union, Optional, Any, Dict
 
+from .ner import NERPipeline, active_strategy_context
 from .compressor import OllamaCompressor, CloudCompressor
 from .exceptions import CompressionError, OllamaConnectionError
 from .state import MemoryState, Message
 
-# Phase 2 event imports (optional – may be None if events disabled)
 from .events.bus import EventBus
 from .events.types import (
     L2SummaryGeneratedEvent,
@@ -74,19 +74,25 @@ class CompressionWorker:
         fallback_truncate: bool = True,
         event_bus: Optional[EventBus] = None,
         journal: Optional[AsyncCompressionJournal] = None,
+        enable_deterministic_ner: bool = True,  # NEW
+        custom_ner_patterns: Optional[dict] = None,  # NEW
     ) -> None:
         self._compressor = compressor
         self._fallback_truncate = fallback_truncate
-        self._event_bus = event_bus  # None if events disabled
-        self._journal = (
-            journal  # None if journal disabled (but event handler will use it)
-        )
-
+        self._event_bus = event_bus
+        self._journal = journal
         self._queue: asyncio.Queue[CompressionTask | None] = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._running: bool = False
         self._processed: int = 0
         self._failed: int = 0
+
+        # Initialize the NER Pipeline
+        self._enable_ner = enable_deterministic_ner
+        self._ner_pipeline = NERPipeline.from_config(
+            enable=self._enable_ner,
+            custom_patterns=custom_ner_patterns,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -169,20 +175,38 @@ class CompressionWorker:
         start_time = asyncio.get_event_loop().time()
 
         try:
-            # Perform compression (calls external LLM)
+            # 1. Run local deterministic regex extraction
+            deterministic_entities: dict[str, str] = {}
+            if self._enable_ner:
+                deterministic_entities = self._ner_pipeline.extract(messages_text)
+
+            # 2. Execute background LLM compression wave as normal
             result = await self._compressor.compress(messages_text)
             duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
 
-            # Extract data from result
             narrative = result.get("narrative_summary", "").strip()
-            entities = result.get("extracted_entities", {})
+            llm_entities = result.get("extracted_entities", {})
             original_tokens = self._estimate_tokens(messages_text)
             compressed_tokens = self._estimate_tokens(narrative)
 
-            # 1. Merge results into memory state (upsert will trigger entity events via callback)
-            self._merge(state, result)
+            # 3. Secure Merge: Deterministic regex matches override LLM hallucinations
+            combined_entities = {**llm_entities, **deterministic_entities}
+            result["extracted_entities"] = combined_entities
 
-            # 2. Emit L2 summary generated event (if bus enabled)
+            # 4. Generate Strategy Mapping Context for Event Consumers
+            strategy_map = {k: "deterministic" for k in deterministic_entities}
+            for k in llm_entities:
+                if k not in strategy_map:
+                    strategy_map[k] = "llm_synthesis"
+
+            # 5. Bind context token and merge into state securely
+            token = active_strategy_context.set(strategy_map)
+            try:
+                self._merge(state, result)
+            finally:
+                active_strategy_context.reset(token)
+
+            # 6. Emit existing L2SummaryGeneratedEvent and CompressionCycleCompleteEvent
             if self._event_bus:
                 asyncio.create_task(
                     self._event_bus.emit(
@@ -202,15 +226,13 @@ class CompressionWorker:
                     )
                 )
 
-            # 3. Emit compression cycle complete event (triggers journal write via handler)
             if self._event_bus:
-                # Calculate tokens evicted (approximate: sum of message tokens)
                 tokens_evicted = sum(m.token_count for m in task.messages)
                 asyncio.create_task(
                     self._event_bus.emit(
                         CompressionCycleCompleteEvent(
                             l1_tokens_evicted=tokens_evicted,
-                            l1_5_entities_retained=entities,  # exact entities preserved
+                            l1_5_entities_retained=combined_entities,
                             l2_summary_generated=narrative,
                             messages_compressed=len(task.messages),
                             final_l1_tokens=state.l1_working.token_count,
@@ -223,7 +245,7 @@ class CompressionWorker:
             logger.info(
                 f"CompressionWorker: compressed {len(task.messages)} messages → "
                 f"narrative ({len(narrative)} chars), "
-                f"{len(entities)} entities extracted (cycle {cycle_id})."
+                f"{len(combined_entities)} entities extracted (cycle {cycle_id})."
             )
 
         except (OllamaConnectionError, CompressionError) as exc:
@@ -231,8 +253,6 @@ class CompressionWorker:
                 f"CompressionWorker: compression failed ({exc}). "
                 f"fallback_truncate={self._fallback_truncate}, cycle={cycle_id}"
             )
-
-            # Emit failure event (if bus enabled)
             if self._event_bus:
                 asyncio.create_task(
                     self._event_bus.emit(
@@ -270,6 +290,21 @@ class CompressionWorker:
             )
 
     def _fallback_merge(self, state: MemoryState, messages: list[Message]) -> None:
+        messages_text = _messages_to_text(messages)
+        deterministic_entities: dict[str, str] = {}
+
+        # Even during a provider outage, deterministic values are salvaged
+        if self._enable_ner:
+            deterministic_entities = self._ner_pipeline.extract(messages_text)
+
+        if deterministic_entities:
+            strategy_map = {k: "deterministic" for k in deterministic_entities}
+            token = active_strategy_context.set(strategy_map)
+            try:
+                state.l1_5_entities.upsert(deterministic_entities)
+            finally:
+                active_strategy_context.reset(token)
+
         note = (
             f"[COMPRESSION UNAVAILABLE: {len(messages)} messages were truncated. "
             f"First message role: {messages[0].role if messages else 'unknown'}]"
