@@ -1,4 +1,3 @@
-
 # Sawtooth Memory
 
 [![Automated Test Suite](https://github.com/HtooTayZa/sawtooth-memory/actions/workflows/test.yaml/badge.svg)](https://github.com/HtooTayZa/sawtooth-memory/actions/workflows/test.yaml)
@@ -6,20 +5,15 @@
 [![Python Support](https://img.shields.io/pypi/pyversions/sawtooth-memory.svg)](https://pypi.org/project/sawtooth-memory/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A high-performance, non-blocking hierarchical memory framework for LLM Agents.**
+**A high-performance, asynchronous non-blocking hierarchical memory framework for LLM Agents.**
 
 ## The Problem
+
 Standard LLM memory systems (like LangChain's `ConversationSummaryMemory`) process conversation history sequentially on the main application thread. Every time a user sends a message, the entire application freezes while the system waits for an LLM to generate a new historical summary. Furthermore, these summaries suffer from the "Lost in the Middle" hallucination effect, frequently deleting specific UUIDs, names, or rules to save tokens.
 
 ## The Solution
+
 **Sawtooth Memory** eliminates this latency and data loss. It immediately stores the user's message and returns control to the application in milliseconds, offloading the heavy summarization to an asynchronous background worker. To prevent hallucinations, it extracts critical facts into an immutable ledger before summarizing.
-
----
-## Documentation
-
-For deep architectural deep-dives, comprehensive API specifications, and advanced lifecycle configurations, please refer to the official documentation:
-
-[View Detailed Architecture & API Reference (DOCUMENTATION.md)](DOCUMENTATION.md)
 
 ---
 
@@ -58,18 +52,30 @@ When your agent is ready to respond, Sawtooth stitches together an optimized con
 │  ┌───────────────┐  │
 │  │ L0 System     │  │  immutable persona + tool schemas
 │  │ L2 Archive    │  │  compressed narrative memory
-│  │ L1.5 Entities │  │  exact IDs, paths, UUIDs
+│  │ L1.5 Entities │  │  exact IDs, rolling conflict history
 │  │ L1 Working    │  │  recent raw conversation
 │  └───────────────┘  │
 └──────────┬──────────┘
            │
            ▼
-     build_prompt()
+     build_prompt() / get_compiled_prompt()
            │
            ▼
         LLM API
 
 ```
+
+* **Phase 2 Update to L1.5:** The Entity Ledger now utilizes a rolling window history. Instead of overwriting older values, it preserves conflicts and automatically injects a `<key>__history` variable into the prompt so the LLM can see the chronological provenance of changing variables.
+
+---
+
+## Key Features
+
+* **Zero-Latency Ingestion:** Messages are appended to L1 instantly. A local `tiktoken` monitor checks thresholds without making API calls.
+* **Dual LLM Compression Backends:** Run compression locally via `OllamaCompressor` or in the cloud using `CloudCompressor` (with modular adapters for OpenAI, Anthropic, and Gemini).
+* **Deterministic NER Engine:** A zero-latency local regex pipeline extracts UUIDs, file paths, and URIs *before* the LLM sees the text, securely populating the Entity Ledger (L1.5) and overriding potential LLM hallucinations.
+* **Turn-Based Batching & Debouncing:** Prevent background queue flooding using `max_unsummarized_turns` to trigger compression safely by turn count, alongside token limits.
+* **Graceful Degradation:** If the system hits the `hard_limit_tokens` before the asynchronous background worker finishes a cycle, a fallback protocol forcefully truncates the oldest L1 messages on the main thread to prevent API crashes.
 
 ---
 
@@ -85,7 +91,7 @@ By moving compression to the background, Sawtooth achieves massive latency reduc
 | **Final Prompt Payload** | 506 tokens | **454 tokens** | **10% Lower Token Cost** |
 | **UUID / Fact Recall** | Variable / Hallucinates | **100% Retained** | **Guaranteed via L1.5 Ledger** |
 
-For full methodology, cloud comparisons, and reproducibility steps, view our [Read the Performance Benchmarks](BENCHMARKS.md).
+For full methodology, cloud comparisons, and reproducibility steps, view our [Performance Benchmarks](BENCHMARKS.md).
 
 ---
 
@@ -105,32 +111,35 @@ pip install langchain-openai langchain-anthropic langchain-google-genai
 
 ---
 
-## Quickstart
+## Quickstart (V2 Configuration)
 
-### 1. The Standard Agent Loop
-
-Initialize the `ContextManager` and let the background worker handle the heavy lifting. Sawtooth is universally compatible with local air-gapped models (Ollama) and cloud APIs.
+The V2 configuration introduces dynamic validation, allowing you to set a single `background_model` parameter that automatically routes to the respective local or cloud backend.
 
 ```python
 import asyncio
 from sawtooth_memory import ContextManager, ContextManagerConfig
-from sawtooth_memory.config import OllamaConfig
 
 async def main():
+    # V2 Simplified Configuration
     config = ContextManagerConfig(
-        soft_limit_tokens=1000,
-        hard_limit_tokens=2000,
-        ollama=OllamaConfig(base_url="http://localhost:11434", model="phi4")
+        background_model="gpt-4o-mini",   # Auto-routes to CloudCompressor (or "phi4" for local Ollama)
+        soft_limit_tokens=1000,           # Token threshold to trigger background compression
+        hard_limit_tokens=2000,           # Emergency truncation limit
+        max_unsummarized_turns=10,        # Turn-based batching threshold
+        enable_deterministic_ner=True     # Enable local regex extraction for the Entity Ledger
     )
 
     async with ContextManager(system_prompt="You are a helpful assistant.", config=config) as cm:
 
-        # 1. Instantly ingest messages (Main thread is never blocked)
+        # Optional: Run a health check to verify backend routing and worker status
+        await cm.health_check()
+
+        # 1. Instantly ingest messages (Zero-latency on the main thread)
         await cm.add_message("user", "My transaction ID is txn_998877_alpha")
         await cm.add_message("assistant", "I have noted your transaction ID.")
 
         # 2. Build the optimized prompt to send to your main LLM
-        prompt = cm.build_prompt()
+        prompt = await cm.get_compiled_prompt()
         print(prompt)
 
 if __name__ == "__main__":
@@ -138,12 +147,48 @@ if __name__ == "__main__":
 
 ```
 
-### 2. Recall Explainability Traces
+---
+
+## Advanced Features
+
+### 1. Deterministic NER (Named Entity Recognition)
+
+By setting `enable_deterministic_ner=True`, Sawtooth intercepts incoming text and uses a fast regex engine to extract critical string identifiers directly into the Entity Ledger. You can also inject custom patterns:
+
+```python
+config = ContextManagerConfig(
+    enable_deterministic_ner=True,
+    custom_ner_patterns={
+        "aws_arn": r"arn:aws:[a-z0-9\-]+:[a-z0-9\-]+:\d{12}:[a-zA-Z0-9\-\_/]+"
+    }
+)
+
+```
+
+### 2. LangGraph Integration & ToolMessage Sanitization
+
+Sawtooth provides a native `SawtoothLangGraphAdapter` to sync state seamlessly.
+
+**V2 Safety Feature:** Strict cloud APIs (like Anthropic/OpenAI) will crash if a `ToolMessage` is sent without its parent `AIMessage` (the tool call request). The LangGraph adapter includes an advanced **3-pass sanitization logic** that automatically detects and drops orphaned `ToolMessage`s when their parent `AIMessage` has been compressed and evicted to L2 Archival Memory.
+
+```python
+from langgraph.graph import StateGraph
+from sawtooth_memory.integrations.langgraph import SawtoothLangGraphAdapter
+
+# Initialize the adapter with your Sawtooth ContextManager
+adapter = SawtoothLangGraphAdapter(cm)
+
+# Automatically syncs state, deduplicates message IDs, and sanitizes orphaned tools
+sanitized_messages = await adapter.sync_and_sanitize(langgraph_state_messages)
+
+```
+
+### 3. Recall Explainability Traces
 
 Sawtooth eliminates the "black-box" of agent memory by providing deterministic audit trails. You can query the memory system to see exactly why a fact was retained in the prompt.
 
 ```python
-trace = cm.explain_prompt()
+trace = await cm.explain_prompt()
 
 import json
 print(json.dumps(trace, indent=2))
@@ -163,28 +208,12 @@ print(json.dumps(trace, indent=2))
     {
       "key": "user_transaction_id",
       "value": "txn_998877_alpha",
-      "origin": "Anchored via L1.5 explicit instruction"
+      "origin": "Anchored via L1.5 deterministic NER extraction"
     }
   ],
   "l1_active_messages": 4,
   "total_tokens": 342
 }
-
-```
-
-### 3. Integrations: LangGraph
-
-Sawtooth provides a native `SawtoothMemorySaver` adapter, acting as a drop-in checkpointer replacement for LangGraph architectures.
-
-```python
-from langgraph.graph import StateGraph
-from sawtooth_memory.integrations.langgraph import SawtoothMemorySaver
-
-graph_builder = StateGraph(State)
-# ... add nodes and edges ...
-
-memory_saver = SawtoothMemorySaver(cm)
-graph = graph_builder.compile(checkpointer=memory_saver)
 
 ```
 
@@ -198,11 +227,12 @@ graph = graph_builder.compile(checkpointer=memory_saver)
 * [x] Local (Ollama) & Cloud compatibility
 
 
-* [x] **Phase 2: Observability & Telemetry**
-* [x] EventBus Subsystem
-* [x] Explainability Traces
-* [x] Persistent JSONL Auditing Journal
-* [x] Performance Benchmarking Harness
+* [x] **Phase 2: Observability & Stability**
+* [x] EventBus Subsystem & JSONL Auditing Journal
+* [x] Explainability Traces & Performance Benchmarking Harness
+* [x] Deterministic NER Engine
+* [x] LangGraph ToolMessage Sanitization
+* [x] Turn-Based Batching & Debouncing
 
 
 * [ ] **Phase 3: Advanced Architectures (Up Next)**
@@ -216,11 +246,10 @@ graph = graph_builder.compile(checkpointer=memory_saver)
 
 ## Contributing
 
-We welcome pull requests. See our [CONTRIBUTING.md](https://www.google.com/search?q=CONTRIBUTING.md) for guidelines on how to run the test suite and ensure code quality.
+We welcome pull requests. See our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to run the test suite and ensure code quality.
 
 ---
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
-
----
