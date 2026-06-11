@@ -1,4 +1,61 @@
-.venv
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-dist
+*$py.class
+*.so
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+
+# Type checking caching
+.mypy_cache/
+.pyre/
+.typeguard/
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+
+# Environment variables
+.env
+.env.local
+
+# macOS specific
+.DS_Store
+
+# Project specific logs or local data
+*.log
+sawtooth_compression_journal.jsonl
