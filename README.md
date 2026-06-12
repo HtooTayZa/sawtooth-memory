@@ -183,7 +183,48 @@ sanitized_messages = await adapter.sync_and_sanitize(langgraph_state_messages)
 
 ```
 
-### 3. Recall Explainability Traces
+### 3. Modern LangChain & LCEL Integration
+
+Sawtooth provides a native, pure-Python adapter that fully implements LangChain's modern `BaseChatMessageHistory` interface. This allows you to drop Sawtooth directly into any LCEL Runnable or Agent executor, bringing background compression and deterministic NER to standard LangChain pipelines without blocking the main thread.
+
+```python
+from langchain_core.messages import HumanMessage
+from sawtooth_memory.integrations.langchain_adapter import SawtoothChatMessageHistory
+
+# Drop-in replacement for any LangChain memory module
+history = SawtoothChatMessageHistory(
+    system_prompt="You are a financial analyst.",
+    config=config
+)
+
+history.add_message(HumanMessage(content="Analyze these Q3 numbers."))
+
+# Automatically compiles the L0, L1.5, L2, and L1 tiers safely across thread boundaries
+lc_messages = history.messages
+
+```
+
+### 4. Synchronous API Wrapper (Flask, Django, CLI)
+If you are building in a traditional synchronous environment (like a standard Flask or Django view) where you cannot use asyncio or await, Sawtooth provides an enterprise-grade SawtoothSyncWrapper. It uses an AnyIO BlockingPortal to isolate the asynchronous background worker on a safe daemon thread, preventing event loop collisions while maintaining zero-latency writes.
+
+```python
+from sawtooth_memory.sync_wrapper import SawtoothSyncWrapper
+
+def my_flask_route():
+    # Use standard 'with' - no async required!
+    with SawtoothSyncWrapper("You are a helpful assistant.", config=config) as memory:
+
+        # 1. Instantly write to the background thread
+        memory.add_message("user", "Hello world!")
+
+        # 2. Safely read the compiled state machine
+        prompt = memory.build_prompt()
+
+        return prompt
+
+
+```
+### 4. Recall Explainability Traces
 
 Sawtooth eliminates the "black-box" of agent memory by providing deterministic audit trails. You can query the memory system to see exactly why a fact was retained in the prompt.
 
@@ -233,6 +274,8 @@ print(json.dumps(trace, indent=2))
 * [x] Deterministic NER Engine
 * [x] LangGraph ToolMessage Sanitization
 * [x] Turn-Based Batching & Debouncing
+* [x] Modern LangChain (LCEL) History Adapter
+* [x] AnyIO Synchronous Blocking Portal (Flask/Django Support)
 
 
 * [ ] **Phase 3: Advanced Architectures (Up Next)**
