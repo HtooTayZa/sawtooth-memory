@@ -27,11 +27,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # If you use a standard setup:
-          pip install .[test]
-          # OR if you just install manually in CI:
-          pip install -r requirements.txt
-          pip install redis pytest pytest-asyncio
+          pip install .
+          pip install pytest pytest-asyncio
 
       - name: Execute Pytest
         run: |
