@@ -65,17 +65,17 @@ When your agent is ready to respond, Sawtooth stitches together an optimized con
 
 ```
 
-* **Phase 2 Update to L1.5:** The Entity Ledger now utilizes a rolling window history. Instead of overwriting older values, it preserves conflicts and automatically injects a `<key>__history` variable into the prompt so the LLM can see the chronological provenance of changing variables.
+- **Phase 2 Update to L1.5:** The Entity Ledger now utilizes a rolling window history. Instead of overwriting older values, it preserves conflicts and automatically injects a `<key>__history` variable into the prompt so the LLM can see the chronological provenance of changing variables.
 
 ---
 
 ## Key Features
 
-* **Zero-Latency Ingestion:** Messages are appended to L1 instantly. A local `tiktoken` monitor checks thresholds without making API calls.
-* **Dual LLM Compression Backends:** Run compression locally via `OllamaCompressor` or in the cloud using `CloudCompressor` (with modular adapters for OpenAI, Anthropic, and Gemini).
-* **Deterministic NER Engine:** A zero-latency local regex pipeline extracts UUIDs, file paths, and URIs *before* the LLM sees the text, securely populating the Entity Ledger (L1.5) and overriding potential LLM hallucinations.
-* **Turn-Based Batching & Debouncing:** Prevent background queue flooding using `max_unsummarized_turns` to trigger compression safely by turn count, alongside token limits.
-* **Graceful Degradation:** If the system hits the `hard_limit_tokens` before the asynchronous background worker finishes a cycle, a fallback protocol forcefully truncates the oldest L1 messages on the main thread to prevent API crashes.
+- **Zero-Latency Ingestion:** Messages are appended to L1 instantly. A local `tiktoken` monitor checks thresholds without making API calls.
+- **Dual LLM Compression Backends:** Run compression locally via `OllamaCompressor` or in the cloud using `CloudCompressor` (with modular adapters for OpenAI, Anthropic, and Gemini).
+- **Deterministic NER Engine:** A zero-latency local regex pipeline extracts UUIDs, file paths, and URIs _before_ the LLM sees the text, securely populating the Entity Ledger (L1.5) and overriding potential LLM hallucinations.
+- **Turn-Based Batching & Debouncing:** Prevent background queue flooding using `max_unsummarized_turns` to trigger compression safely by turn count, alongside token limits.
+- **Graceful Degradation:** If the system hits the `hard_limit_tokens` before the asynchronous background worker finishes a cycle, a fallback protocol forcefully truncates the oldest L1 messages on the main thread to prevent API crashes.
 
 ---
 
@@ -85,11 +85,11 @@ By moving compression to the background, Sawtooth achieves massive latency reduc
 
 **Local GPU Benchmark (NVIDIA RTX 5060 | Model: phi4-mini | 20-Message Conversation)**
 
-| Performance Metric | Standard Summary Memory | Sawtooth Hierarchical | Architectural Advantage |
-| --- | --- | --- | --- |
-| **Main Thread Latency** | 64.15 seconds | **5.70 seconds** | **11.3x Faster Execution** |
-| **Final Prompt Payload** | 506 tokens | **454 tokens** | **10% Lower Token Cost** |
-| **UUID / Fact Recall** | Variable / Hallucinates | **100% Retained** | **Guaranteed via L1.5 Ledger** |
+| Performance Metric       | Standard Summary Memory | Sawtooth Hierarchical | Architectural Advantage        |
+| ------------------------ | ----------------------- | --------------------- | ------------------------------ |
+| **Main Thread Latency**  | 64.15 seconds           | **5.70 seconds**      | **11.3x Faster Execution**     |
+| **Final Prompt Payload** | 506 tokens              | **454 tokens**        | **10% Lower Token Cost**       |
+| **UUID / Fact Recall**   | Variable / Hallucinates | **100% Retained**     | **Guaranteed via L1.5 Ledger** |
 
 For full methodology, cloud comparisons, and reproducibility steps, view our [Performance Benchmarks](BENCHMARKS.md).
 
@@ -102,7 +102,7 @@ pip install sawtooth-memory
 
 ```
 
-*Optional dependencies for cloud providers:*
+_Optional dependencies for cloud providers:_
 
 ```bash
 pip install langchain-openai langchain-anthropic langchain-google-genai
@@ -205,6 +205,7 @@ lc_messages = history.messages
 ```
 
 ### 4. Synchronous API Wrapper (Flask, Django, CLI)
+
 If you are building in a traditional synchronous environment (like a standard Flask or Django view) where you cannot use asyncio or await, Sawtooth provides an enterprise-grade SawtoothSyncWrapper. It uses an AnyIO BlockingPortal to isolate the asynchronous background worker on a safe daemon thread, preventing event loop collisions while maintaining zero-latency writes.
 
 ```python
@@ -224,6 +225,7 @@ def my_flask_route():
 
 
 ```
+
 ### 4. Recall Explainability Traces
 
 Sawtooth eliminates the "black-box" of agent memory by providing deterministic audit trails. You can query the memory system to see exactly why a fact was retained in the prompt.
@@ -255,8 +257,8 @@ print(json.dumps(trace, indent=2))
   "l1_active_messages": 4,
   "total_tokens": 342
 }
-
 ```
+
 ### 5. Distributed Storage Backends (Horizontal Scaling)
 
 By default, Sawtooth manages process state locally. For multi-container stateless applications (e.g., load-balanced FastAPI apps or Kubernetes pods), Sawtooth provides an abstract storage layer to decouple memory data from active server process memory RAM.
@@ -291,29 +293,25 @@ async def main():
 
 ## Roadmap
 
-* **Phase 1: Core Architecture**
-* [x] L1/L2 Hierarchical Buffer
-* [x] Asynchronous Background Worker
-* [x] Local (Ollama) & Cloud compatibility
+- **Phase 1: Core Architecture**
+- [x] L1/L2 Hierarchical Buffer
+- [x] Asynchronous Background Worker
+- [x] Local (Ollama) & Cloud compatibility
 
+- **Phase 2: Observability & Stability**
+- [x] EventBus Subsystem & JSONL Auditing Journal
+- [x] Explainability Traces & Performance Benchmarking Harness
+- [x] Deterministic NER Engine
+- [x] LangGraph ToolMessage Sanitization
+- [x] Turn-Based Batching & Debouncing
+- [x] Modern LangChain (LCEL) History Adapter
+- [x] AnyIO Synchronous Blocking Portal (Flask/Django Support)
 
-* **Phase 2: Observability & Stability**
-* [x] EventBus Subsystem & JSONL Auditing Journal
-* [x] Explainability Traces & Performance Benchmarking Harness
-* [x] Deterministic NER Engine
-* [x] LangGraph ToolMessage Sanitization
-* [x] Turn-Based Batching & Debouncing
-* [x] Modern LangChain (LCEL) History Adapter
-* [x] AnyIO Synchronous Blocking Portal (Flask/Django Support)
-
-
-*  **Phase 3: Advanced Architectures (Up Next)**
-* [x] Redis Distributed Storage Adapter (High-Speed Session Pooling)
-* [ ] Postgres Storage Adapter (Persistent Relational Cache with pgvector)
-* [ ] Multi-Agent Memory Pooling (Shared contextual state)
-* [ ] Semantic Vector L3 Archival Memory (RAG integration)
-
-
+- **Phase 3: Advanced Architectures (Up Next)**
+- [x] Redis Distributed Storage Adapter (High-Speed Session Pooling)
+- [ ] Postgres Storage Adapter (Persistent Relational Cache with pgvector)
+- [ ] Multi-Agent Memory Pooling (Shared contextual state)
+- [ ] Semantic Vector L3 Archival Memory (RAG integration)
 
 ---
 
