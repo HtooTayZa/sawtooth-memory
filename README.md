@@ -257,18 +257,47 @@ print(json.dumps(trace, indent=2))
 }
 
 ```
+### 5. Distributed Storage Backends (Horizontal Scaling)
 
----
+By default, Sawtooth manages process state locally. For multi-container stateless applications (e.g., load-balanced FastAPI apps or Kubernetes pods), Sawtooth provides an abstract storage layer to decouple memory data from active server process memory RAM.
+
+The `RedisStorageAdapter` serializes your state trees to high-speed JSON structures natively, allowing multiple distinct node pods to process background worker loops seamlessly without cross-session data overwrites.
+
+```python
+import asyncio
+from sawtooth_memory import ContextManager, ContextManagerConfig
+from sawtooth_memory.storage.redis_adapter import RedisStorageAdapter
+
+async def main():
+    # Initialize the high-speed distributed storage backend
+    redis_storage = RedisStorageAdapter(
+        redis_url="redis://localhost:6379/0",
+        key_prefix="sawtooth:session:",
+        ttl_seconds=86400  # Automatically expire inactive sessions after 24 hours
+    )
+
+    config = ContextManagerConfig(
+        background_model="gpt-4o-mini",
+        storage_adapter=redis_storage,
+        session_id="user_session_994"  # Route state changes dynamically via custom keys
+    )
+
+    async with ContextManager(system_prompt="You are a cluster node agent.", config=config) as cm:
+        await cm.add_message("user", "Save this cluster token: secret_pass_123")
+
+        # Hydrates state directly across node instances instantly!
+        prompt = await cm.get_compiled_prompt()
+```
 
 ## Roadmap
 
-* [x] **Phase 1: Core Architecture**
+* **Phase 1: Core Architecture**
 * [x] L1/L2 Hierarchical Buffer
 * [x] Asynchronous Background Worker
 * [x] Local (Ollama) & Cloud compatibility
 
 
-* [x] **Phase 2: Observability & Stability**
+* **Phase 2: Observability & Stability**
 * [x] EventBus Subsystem & JSONL Auditing Journal
 * [x] Explainability Traces & Performance Benchmarking Harness
 * [x] Deterministic NER Engine
@@ -278,10 +307,11 @@ print(json.dumps(trace, indent=2))
 * [x] AnyIO Synchronous Blocking Portal (Flask/Django Support)
 
 
-* [ ] **Phase 3: Advanced Architectures (Up Next)**
+*  **Phase 3: Advanced Architectures (Up Next)**
+* [x] Redis Distributed Storage Adapter (High-Speed Session Pooling)
+* [ ] Postgres Storage Adapter (Persistent Relational Cache with pgvector)
 * [ ] Multi-Agent Memory Pooling (Shared contextual state)
 * [ ] Semantic Vector L3 Archival Memory (RAG integration)
-* [ ] Redis/Postgres Adapter for Distributed Deployments
 
 
 
