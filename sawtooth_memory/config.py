@@ -4,6 +4,7 @@ config.py — Configuration models for Sawtooth-Memory.
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field, SecretStr, model_validator
@@ -19,6 +20,38 @@ class Provider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
+
+
+# Cloud model name prefixes used by ``background_model`` auto-routing.
+_CLOUD_MODEL_PREFIXES: dict[Provider, tuple[str, ...]] = {
+    Provider.OPENAI: ("gpt-", "o1", "o3", "chatgpt-"),
+    Provider.ANTHROPIC: ("claude-",),
+    Provider.GEMINI: ("gemini-",),
+}
+
+_PROVIDER_ENV_KEYS: dict[Provider, tuple[str, ...]] = {
+    Provider.OPENAI: ("OPENAI_API_KEY",),
+    Provider.ANTHROPIC: ("ANTHROPIC_API_KEY",),
+    Provider.GEMINI: ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+}
+
+
+def infer_cloud_provider(model: str) -> Provider | None:
+    """Return the cloud provider for *model*, or ``None`` for local Ollama models."""
+    normalized = model.lower()
+    for provider, prefixes in _CLOUD_MODEL_PREFIXES.items():
+        if any(normalized.startswith(prefix) for prefix in prefixes):
+            return provider
+    return None
+
+
+def resolve_cloud_api_key(provider: Provider) -> str | None:
+    """Read the API key for *provider* from standard environment variables."""
+    for env_var in _PROVIDER_ENV_KEYS[provider]:
+        value = os.environ.get(env_var)
+        if value:
+            return value
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +178,23 @@ class ContextManagerConfig(BaseModel):
         # If an Ollama configuration block is active, cascade down
         if self.ollama:
             self.ollama.model = self.background_model
-        # If neither is defined, initialize a default Ollama config with the target background model
         elif not self.cloud:
-            self.ollama = OllamaConfig(model=self.background_model)
+            provider = infer_cloud_provider(self.background_model)
+            if provider is not None:
+                api_key = resolve_cloud_api_key(provider)
+                if not api_key:
+                    env_vars = " or ".join(_PROVIDER_ENV_KEYS[provider])
+                    raise ValueError(
+                        f"background_model={self.background_model!r} requires a "
+                        f"{provider.value} API key. Set {env_vars} in your environment, "
+                        "or pass an explicit cloud=CloudConfig(...)."
+                    )
+                self.cloud = CloudConfig(
+                    provider=provider,
+                    model=self.background_model,
+                    api_key=api_key,
+                )
+            else:
+                self.ollama = OllamaConfig(model=self.background_model)
 
         return self
