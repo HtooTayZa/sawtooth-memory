@@ -7,6 +7,8 @@ bridges standard sync execution with the async background worker.
 
 import pytest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
 from sawtooth_memory.config import ContextManagerConfig
 from sawtooth_memory.sync_wrapper import SawtoothSyncWrapper
 
@@ -27,12 +29,16 @@ def test_sync_wrapper_lifecycle_and_health():
     """Verify that the wrapper initializes, connects to the portal, and tears down cleanly."""
     config = ContextManagerConfig(soft_limit_tokens=1000)
 
-    with SawtoothSyncWrapper(
-        system_prompt="Test Agent", config=config, enable_events=False
-    ) as memory:
-        health = memory.health_check()
-        assert health["status"] == "healthy"
-        assert health["checks"]["configuration"] == "OK"
+    with patch(
+        "sawtooth_memory.middleware.OllamaCompressor.ping",
+        new_callable=AsyncMock,
+    ):
+        with SawtoothSyncWrapper(
+            system_prompt="Test Agent", config=config, enable_events=False
+        ) as memory:
+            health = memory.health_check()
+            assert health["status"] == "healthy"
+            assert health["checks"]["configuration"] == "OK"
 
 
 def test_sync_wrapper_core_pipeline(tmp_path: Path):

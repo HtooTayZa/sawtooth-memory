@@ -7,7 +7,14 @@ with near-zero latency.
 
 import json
 from typing import Any, Optional
-import redis.asyncio as redis
+
+try:
+    import redis.asyncio as redis
+except ImportError as exc:  # pragma: no cover - exercised when redis extra missing
+    redis = None  # type: ignore[assignment]
+    _REDIS_IMPORT_ERROR = exc
+else:
+    _REDIS_IMPORT_ERROR = None
 
 from ..state import (
     ArchivalMemory,
@@ -42,6 +49,12 @@ class RedisStorageAdapter(BaseStorageAdapter):
         self.redis_url = redis_url
         self.key_prefix = key_prefix
         self.ttl_seconds = ttl_seconds
+
+        if redis is None:
+            raise ImportError(
+                "Redis support requires the optional redis dependency. "
+                "Install with: pip install sawtooth-memory[redis]"
+            ) from _REDIS_IMPORT_ERROR
 
         # Initialize the async connection pool
         self._client = redis.from_url(self.redis_url, decode_responses=True)

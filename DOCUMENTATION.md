@@ -136,6 +136,9 @@ cloud_config = ContextManagerConfig(
     )
 )
 
+# V2 shorthand — auto-routes cloud models via OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY
+v2_config = ContextManagerConfig(background_model="gpt-4o-mini")
+
 ```
 
 **Key Parameters:**

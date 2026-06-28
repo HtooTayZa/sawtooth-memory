@@ -1,6 +1,6 @@
 """tests/test_middleware.py — Integration tests for ContextManager."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -157,11 +157,28 @@ class TestRepr:
 class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check_passes_valid_config(self, config):
-        async with ContextManager("Sys.", config) as cm:
-            report = await cm.health_check()
-            assert report["status"] == "healthy"
-            assert report["checks"]["configuration"] == "OK"
-            assert report["checks"]["worker_status"] == "RUNNING"
+        with patch(
+            "sawtooth_memory.middleware.OllamaCompressor.ping",
+            new_callable=AsyncMock,
+        ):
+            async with ContextManager("Sys.", config) as cm:
+                report = await cm.health_check()
+                assert report["status"] == "healthy"
+                assert report["checks"]["configuration"] == "OK"
+                assert report["checks"]["worker_status"] == "RUNNING"
+                assert report["checks"]["backend"] == "ollama"
+
+    @pytest.mark.asyncio
+    async def test_health_check_reports_degraded_when_ollama_unreachable(self, config):
+        with patch(
+            "sawtooth_memory.middleware.OllamaCompressor.ping",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("refused"),
+        ):
+            async with ContextManager("Sys.", config) as cm:
+                report = await cm.health_check()
+                assert report["status"] == "degraded"
+                assert "UNREACHABLE" in report["checks"]["backend_reachable"]
 
     @pytest.mark.asyncio
     async def test_health_check_raises_on_invalid_limits(self):

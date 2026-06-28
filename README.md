@@ -102,18 +102,33 @@ pip install sawtooth-memory
 
 ```
 
-_Optional dependencies for cloud providers:_
+_Optional dependencies:_
 
 ```bash
+# Cloud compression providers (install the SDK you use)
 pip install langchain-openai langchain-anthropic langchain-google-genai
 
+# LangChain message history adapter
+pip install sawtooth-memory[langchain]
+
+# LangGraph integration
+pip install sawtooth-memory[langgraph]
+
+# Distributed session storage
+pip install sawtooth-memory[redis]
+
+# Durable Postgres + pgvector storage
+pip install sawtooth-memory[postgres]
+
+# Everything
+pip install sawtooth-memory[all]
 ```
 
 ---
 
 ## Quickstart (V2 Configuration)
 
-The V2 configuration introduces dynamic validation, allowing you to set a single `background_model` parameter that automatically routes to the respective local or cloud backend.
+The V2 configuration introduces dynamic validation, allowing you to set a single `background_model` parameter that automatically routes to the respective local or cloud backend. Cloud models (`gpt-*`, `claude-*`, `gemini-*`) read API keys from standard environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`).
 
 ```python
 import asyncio
@@ -139,12 +154,26 @@ async def main():
         await cm.add_message("assistant", "I have noted your transaction ID.")
 
         # 2. Build the optimized prompt to send to your main LLM
-        prompt = await cm.get_compiled_prompt()
+        prompt = await cm.build_prompt()
         print(prompt)
 
 if __name__ == "__main__":
     asyncio.run(main())
 
+```
+
+For explicit cloud configuration without environment variables:
+
+```python
+from sawtooth_memory.config import CloudConfig, Provider
+
+config = ContextManagerConfig(
+    cloud=CloudConfig(
+        provider=Provider.OPENAI,
+        model="gpt-4o-mini",
+        api_key="sk-...",
+    ),
+)
 ```
 
 ---
@@ -226,12 +255,12 @@ def my_flask_route():
 
 ```
 
-### 4. Recall Explainability Traces
+### 5. Recall Explainability Traces
 
 Sawtooth eliminates the "black-box" of agent memory by providing deterministic audit trails. You can query the memory system to see exactly why a fact was retained in the prompt.
 
 ```python
-trace = await cm.explain_prompt()
+trace = cm.explain_prompt()
 
 import json
 print(json.dumps(trace, indent=2))
@@ -242,24 +271,27 @@ print(json.dumps(trace, indent=2))
 
 ```json
 {
-  "system_prompt": "You are a helpful assistant.",
-  "l2_summary_lineage": [
-    "User initiated troubleshooting for router.",
-    "User provided MAC address."
-  ],
+  "l0_system": {
+    "content": "You are a helpful assistant.",
+    "origin": "Hardcoded System Initialization"
+  },
+  "l2_archival": {
+    "content": "User provided transaction ID txn_998877_alpha.",
+    "origin": "Background Ollama Compression (L1 -> L2)"
+  },
   "l1_5_entities": [
     {
-      "key": "user_transaction_id",
-      "value": "txn_998877_alpha",
-      "origin": "Anchored via L1.5 deterministic NER extraction"
+      "prompt_component": "[ENTITY_LEDGER_L1_5]",
+      "entity_key": "user_transaction_id",
+      "entity_value": "txn_998877_alpha",
+      "origin": "Anchored via explicit tracking engine (Operation: insert) [Strategy: deterministic]"
     }
   ],
-  "l1_active_messages": 4,
-  "total_tokens": 342
+  "l1_working_messages": 2
 }
 ```
 
-### 5. Distributed Storage Backends (Horizontal Scaling)
+### 6. Distributed Storage Backends (Horizontal Scaling)
 
 By default, Sawtooth manages process state locally. For multi-container stateless applications (e.g., load-balanced FastAPI apps or Kubernetes pods), Sawtooth provides an abstract storage layer to decouple memory data from active server process memory RAM.
 
@@ -288,7 +320,7 @@ async def main():
         await cm.add_message("user", "Save this cluster token: secret_pass_123")
 
         # Hydrates state directly across node instances instantly!
-        prompt = await cm.get_compiled_prompt()
+        prompt = await cm.build_prompt()
 ```
 
 ## Roadmap
@@ -307,11 +339,11 @@ async def main():
 - [x] Modern LangChain (LCEL) History Adapter
 - [x] AnyIO Synchronous Blocking Portal (Flask/Django Support)
 
-- **Phase 3: Advanced Architectures (Up Next)**
+- **Phase 3: Advanced Architectures**
 - [x] Redis Distributed Storage Adapter (High-Speed Session Pooling)
-- [ ] Postgres Storage Adapter (Persistent Relational Cache with pgvector)
-- [ ] Multi-Agent Memory Pooling (Shared contextual state)
-- [ ] Semantic Vector L3 Archival Memory (RAG integration)
+- [x] Postgres Storage Adapter (Persistent Relational Cache with pgvector)
+- [x] Multi-Agent Memory Pooling (Shared contextual state)
+- [ ] Semantic Vector L3 Archival Memory (RAG integration — storage layer only; retrieval not yet wired into `build_prompt()`)
 
 ---
 

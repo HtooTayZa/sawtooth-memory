@@ -19,5 +19,5 @@ We use `pyproject.toml` to manage package configurations and dependencies. To ge
 1. **Fork and Clone** the repository to your local machine.
 2. Navigate to the root directory and install the package along with its development dependencies in editable mode:
    ```bash
-   pip install -e .[dev]
+   pip install -e ".[dev,langgraph,redis]"
    ```
