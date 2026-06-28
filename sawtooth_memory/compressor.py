@@ -106,6 +106,12 @@ class OllamaCompressor:
             await self._client.aclose()
             logger.debug("OllamaCompressor: HTTP client closed.")
 
+    async def ping(self) -> None:
+        """Verify that the Ollama server is reachable."""
+        client = await self._get_client()
+        resp = await client.get("/api/tags", timeout=5.0)
+        resp.raise_for_status()
+
     async def compress(self, messages_text: str) -> dict:
         """
         Prune and compress a raw message chunk.
@@ -263,6 +269,13 @@ class CloudCompressor:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             logger.debug("CloudCompressor: HTTP client closed.")
+
+    async def ping(self) -> None:
+        """Verify that cloud credentials are configured."""
+        if not self._config.api_key.get_secret_value().strip():
+            raise ValueError(
+                f"{self._config.provider.value} API key is empty or missing."
+            )
 
     # ------------------------------------------------------------------
     # Public interface

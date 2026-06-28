@@ -125,3 +125,25 @@ async def test_multi_agent_pool_push_and_pull_sync():
             )
             assert "txn_998877_alpha" in prompt[0]["content"]
             assert "[ENTITY_LEDGER_L1_5]" in prompt[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_pool_synced_on_start():
+    """Pool state should hydrate during start(), not only on build_prompt()."""
+    adapter = MockRedisStorageAdapter()
+    pool_id = "startup_pool"
+
+    shared_entities = EntityLedger()
+    shared_entities.upsert({"cluster_token": "secret_pass_123"})
+    shared_archive = ArchivalMemory(narrative="[origin:node_a] Shared deployment context.")
+    adapter.pool_store[pool_id] = (shared_entities, shared_archive)
+
+    config = ContextManagerConfig(
+        storage_adapter=adapter,
+        session_id="node_b_session",
+        pool_id=pool_id,
+    )
+
+    async with ContextManager("You are node B.", config, enable_events=False) as cm:
+        assert cm.state.l1_5_entities.get_latest("cluster_token") == "secret_pass_123"
+        assert "Shared deployment context." in cm.state.l2_archival.narrative

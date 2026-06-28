@@ -228,6 +228,9 @@ class ContextManager:
                     self._state.l1_5_entities = loaded.l1_5_entities
                     self._state.l2_archival = loaded.l2_archival
 
+        if self._config.pool_id:
+            await self._sync_pool_state_from_storage()
+
         if self._enable_events and self._journal:
             await self._journal.start()
         await self._worker.start()
@@ -591,5 +594,32 @@ class ContextManager:
                 report["checks"]["journal"] = "NOT_INITIALIZED"
         else:
             report["checks"]["events"] = "DISABLED"
+
+        # 4. Verify compression backend routing and reachability
+        from .compressor import CloudCompressor, OllamaCompressor
+
+        if isinstance(self._compressor, OllamaCompressor):
+            ollama_cfg = self._config.ollama
+            report["checks"]["backend"] = "ollama"
+            report["checks"]["model"] = ollama_cfg.model if ollama_cfg else "unknown"
+            try:
+                await self._compressor.ping()
+                report["checks"]["backend_reachable"] = "OK"
+            except Exception as exc:
+                report["status"] = "degraded"
+                report["checks"]["backend_reachable"] = f"UNREACHABLE: {exc}"
+        elif isinstance(self._compressor, CloudCompressor):
+            cloud_cfg = self._config.cloud
+            report["checks"]["backend"] = "cloud"
+            report["checks"]["provider"] = (
+                cloud_cfg.provider.value if cloud_cfg else "unknown"
+            )
+            report["checks"]["model"] = cloud_cfg.model if cloud_cfg else "unknown"
+            try:
+                await self._compressor.ping()
+                report["checks"]["backend_reachable"] = "CONFIGURED"
+            except Exception as exc:
+                report["status"] = "unhealthy"
+                report["checks"]["backend_reachable"] = f"MISSING: {exc}"
 
         return report
